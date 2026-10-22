@@ -70,9 +70,18 @@ export function parseDateTime(text) {
   return null;
 }
 
+const CUR = '(?:€|EUR|\\$|USD|£|GBP|CHF|Fr\\.)';
+const NUM = '[-−]?\\d{1,3}(?:[.,\\s\\u00a0\\u202f]?\\d{3})*(?:[.,]\\d{1,2})?';
+/** Ein ganzes Feld ist ein Betrag ("42,17 €", "€42.17", "-5,00 EUR", "12,90"). */
+const AMOUNT_FIELD_RE = new RegExp(`^(?:${CUR}\\s*${NUM}|${NUM}\\s*${CUR}|[-−]?\\d+[.,]\\d{2})$`);
+/** Ein Betrag mit Währung irgendwo im Text ("Zahlung über 42,17 € mit Visa"). */
+const AMOUNT_IN_TEXT_RE = new RegExp(`${CUR}\\s*${NUM}|${NUM}\\s*${CUR}`);
+
 /**
  * Eine Zeile aus der Kurzbefehl-Datei: "Datum;Betrag;Händler;Karte".
- * Enthält der Händlername selbst ein Semikolon, bleibt er trotzdem ganz (alles zwischen Betrag und Karte).
+ * Steht der Betrag nicht im zweiten Feld (andere Bank, Felder vertauscht, Mitteilungstext),
+ * wird er in den übrigen Feldern gesucht; dann gilt das erste übrige Feld als Händler, das letzte als Karte.
+ * Enthält der Händlername selbst ein Semikolon, bleibt er im Normalfall ganz (alles zwischen Betrag und Karte).
  * @param {string} line
  * @returns {{ok: true, date: string, time: string|null, amountCents: number, currency: string|null, merchant: string, card: string}
  *          | {ok: false, error: 'empty'|'fields'|'date'|'amount'}}
@@ -84,10 +93,29 @@ export function parseLogLine(line) {
   if (parts.length < 3) return { ok: false, error: 'fields' };
   const dt = parseDateTime(parts[0]);
   if (!dt) return { ok: false, error: 'date' };
-  const amount = parseAmount(parts[1]);
+
+  if (AMOUNT_FIELD_RE.test(parts[1].replace(/\s+/g, ' '))) {
+    const amount = parseAmount(parts[1]);
+    const card = parts.length >= 4 ? parts[parts.length - 1] : '';
+    const merchant = (parts.length >= 4 ? parts.slice(2, -1) : parts.slice(2)).join(';');
+    return { ok: true, ...dt, amountCents: amount.cents, currency: amount.currency, merchant, card };
+  }
+
+  const rest = parts.slice(1);
+  let idx = rest.findIndex((p) => AMOUNT_FIELD_RE.test(p.replace(/\s+/g, ' ')));
+  let amountText = idx >= 0 ? rest[idx] : null;
+  let remainder = '';
+  if (idx < 0) {
+    idx = rest.findIndex((p) => AMOUNT_IN_TEXT_RE.test(p));
+    if (idx < 0) return { ok: false, error: 'amount' };
+    amountText = rest[idx].match(AMOUNT_IN_TEXT_RE)[0];
+    remainder = rest[idx].replace(amountText, ' ').replace(/\s+/g, ' ').replace(/^[\s:–—-]+|[\s:–—-]+$/g, '');
+  }
+  const amount = parseAmount(amountText);
   if (!amount) return { ok: false, error: 'amount' };
-  const card = parts.length >= 4 ? parts[parts.length - 1] : '';
-  const merchant = (parts.length >= 4 ? parts.slice(2, -1) : parts.slice(2)).join(';');
+  const texts = rest.map((p, i) => (i === idx ? remainder : p)).filter(Boolean);
+  const merchant = texts[0] || '';
+  const card = texts.length >= 2 ? texts[texts.length - 1] : '';
   return { ok: true, ...dt, amountCents: amount.cents, currency: amount.currency, merchant, card };
 }
 

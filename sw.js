@@ -1,5 +1,5 @@
 // Service Worker: App-Hülle offline verfügbar. VERSION bei jeder Änderung hochzählen.
-const VERSION = 'goldene-taler-v1';
+const VERSION = 'goldene-taler-v2';
 const SHELL = [
   './', 'index.html', 'styles.css', 'manifest.webmanifest',
   'src/main.js', 'src/ui.js', 'src/logic.js', 'src/model.js', 'src/storage.js', 'src/texts.js', 'src/catalog.js',

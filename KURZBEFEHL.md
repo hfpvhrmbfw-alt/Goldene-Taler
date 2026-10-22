@@ -8,15 +8,18 @@ Apple lässt fertige Kurzbefehle nur signiert teilen, deshalb einmal von Hand an
 3. Aktion **Datum formatieren**
    - Datum: *Aktuelles Datum*
    - Datumsformat: **ISO 8601**, **Uhrzeit einschließen** an
-4. Aktion **Text**, Inhalt genau so (Teile in Klammern sind Variablen):
+4. Aktion **Text**. Nichts in Klammern abtippen: Jeder Teil unten ist eine blaue Variablen-Blase,
+   dazwischen tippst du nur das Semikolon `;`.
 
    ```
-   [Formatiertes Datum];[Betrag];[Händler];[Name]
+   (Formatiertes Datum) ; (Währungsbetrag) ; (Händler) ; (Name)
    ```
 
-   Variablen einfügen: in das Textfeld tippen › über der Tastatur *Kurzbefehl-Eingabe* wählen ›
-   die Variable antippen und das Feld (**Betrag**, **Händler**, **Name**) auswählen. *Name* ist der Kartenname,
-   je nach iOS-Version heißt das Feld auch *Karte oder Ausweis*. Zwischen den Feldern jeweils ein Semikolon `;`.
+   - Ins Textfeld tippen, über der Tastatur **Formatiertes Datum** wählen, `;` tippen.
+   - Über der Tastatur **Kurzbefehleingabe** wählen, dann die neue blaue Blase antippen und **Währungsbetrag**
+     auswählen (heißt je nach iOS-Version auch *Betrag*). `;` tippen.
+   - Genauso mit **Händler**, `;`, und **Name** (Kartenname, je nach iOS-Version auch *Karte oder Ausweis*).
+   - Am Ende stehen vier blaue Blasen mit drei Semikolons dazwischen.
 5. Aktion **An Textdatei anhängen**
    - Text: *Text* (aus Schritt 4)
    - Dateipfad: `Shortcuts/ausgaben.txt`
@@ -27,5 +30,5 @@ Testen: im Kurzbefehl unten auf ▶ tippen geht nicht ohne echte Zahlung. Am ein
 Apple-Pay-Zahlung in der App **Dateien › iCloud Drive › Shortcuts › ausgaben.txt** öffnen. Steht dort eine
 Zeile wie `2026-10-20T18:55:41+02:00;42,17 €;REWE;Visa`, ist alles richtig.
 
-Wenn ein Feld leer bleibt oder vertauscht ist (je nach Bank unterschiedlich): Reihenfolge in Schritt 4
-anpassen. Die App erwartet immer Datum;Betrag;Händler;Karte.
+Wenn ein Feld leer bleibt oder vertauscht ist (je nach Bank unterschiedlich): Das Datum muss vorne stehen.
+Den Betrag findet die App in jedem Feld; vom Rest gilt das erste Feld als Händler und das letzte als Karte.

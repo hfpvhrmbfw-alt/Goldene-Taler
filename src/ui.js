@@ -190,9 +190,9 @@ export function renderData(el, state, view, info) {
       <li>App <b>Kurzbefehle</b> öffnen, unten <b>Automation</b>, dann <b>+</b> und <b>Transaktion</b> wählen.</li>
       <li>Bei <b>Karte</b> alle Apple-Pay-Karten auswählen, bei <b>Kategorie</b> alle lassen. <b>Sofort ausführen</b>, <b>Weiter</b>, <b>Neuer leerer Kurzbefehl</b>.</li>
       <li>Aktion <b>Datum formatieren</b>: Datum = <i>Aktuelles Datum</i>, Format = <b>ISO 8601</b>, <b>Uhrzeit einschließen</b> an.</li>
-      <li>Aktion <b>Text</b>, genau so füllen (Teile in Klammern sind Variablen aus <i>Kurzbefehl-Eingabe</i>):
-        <pre>[Formatiertes Datum];[Betrag];[Händler];[Name]</pre>
-        <span class="muted"><i>Name</i> ist der Kartenname, je nach iOS-Version auch <i>Karte oder Ausweis</i>.</span></li>
+      <li>Aktion <b>Text</b>. Nichts in Klammern abtippen: Jeder Teil ist eine blaue Variablen-Blase, dazwischen nur <code>;</code> tippen.
+        <pre>(Formatiertes Datum) ; (Währungsbetrag) ; (Händler) ; (Name)</pre>
+        <span class="muted">Über der Tastatur <i>Kurzbefehleingabe</i> wählen, die Blase antippen und das Feld auswählen. <i>Währungsbetrag</i> heißt je nach iOS-Version auch <i>Betrag</i>, <i>Name</i> ist der Kartenname.</span></li>
       <li>Aktion <b>An Textdatei anhängen</b>: Datei = <code>Shortcuts/ausgaben.txt</code>, <b>Neue Zeile anfangen</b> an.</li>
       <li>Fertig. Nach der nächsten Zahlung hier <b>Kurzbefehl-Datei einlesen</b>.</li>
     </ol>
