@@ -1,4 +1,4 @@
-# Goldene Taler – Apple-Pay-Ausgaben ohne App Store
+# Taler – Apple-Pay-Ausgaben ohne App Store
 
 Eigener Ersatz für Tael: Ein Kurzbefehl schreibt jede Apple-Pay-Zahlung in eine Textdatei in iCloud Drive,
 diese Web-App liest die Datei ein, ordnet Zahlungen über Regeln Kategorien zu und zeigt Monatsübersichten.
