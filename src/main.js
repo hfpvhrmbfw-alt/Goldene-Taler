@@ -48,7 +48,7 @@ function render() {
   if (view.tab === 'list') ui.renderList(el, state, view, c);
   if (view.tab === 'rules') ui.renderRules(el, state);
   if (view.tab === 'data') ui.renderData(el, state, view, info);
-  document.title = `Goldene Taler · ${TAB_TITLES[view.tab]}`;
+  document.title = `Taler · ${TAB_TITLES[view.tab]}`;
   $('#add-btn').style.visibility = view.tab === 'rules' || view.tab === 'data' ? 'hidden' : 'visible';
 }
 
