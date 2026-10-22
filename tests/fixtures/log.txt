@@ -1,0 +1,9 @@
+2026-10-20T08:12:03+02:00;3,45 €;Backwerk Hauptbahnhof;Visa
+2026-10-20T18:55:41+02:00;42,17 €;REWE Markt GmbH 1234;Visa
+
+2026-10-19T12:01:00+02:00;12,90 €;Lieferando.de;Girocard
+kaputte zeile
+2026-10-18T09:00:00+02:00;viel Geld;Irgendwer;Visa
+20.10.26, 07:30;2,10 €;MVG Automat;Girocard
+2026-10-17T10:00:00+02:00;9,99 €;Shop; mit Semikolon;Visa
+2026-10-20T18:55:41+02:00;42,17 €;REWE Markt GmbH 1234;Visa
