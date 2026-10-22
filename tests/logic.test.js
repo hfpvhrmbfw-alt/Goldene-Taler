@@ -141,3 +141,22 @@ test('Export/Import: Rundweg, neuere Version abgelehnt, kaputte Einträge übers
   assert.equal(bad.skipped, 1);
   assert.deepEqual(M.upgradeRaw(M.upgradeRaw({ app: 'taler' })), M.upgradeRaw({ app: 'taler' }));
 });
+
+test('parseLogLine: Betrag in anderem Feld oder im Text', () => {
+  const d = '2026-10-20T18:55:41+02:00';
+  const pick = (r) => [r.amountCents, r.merchant, r.card];
+  assert.deepEqual(pick(L.parseLogLine(`${d};REWE Markt;42,17 €;Visa`)), [4217, 'REWE Markt', 'Visa']);
+  assert.deepEqual(pick(L.parseLogLine(`${d};REWE;Zahlung über 42,17 € mit Visa;Apple Card`)), [4217, 'REWE', 'Apple Card']);
+  assert.deepEqual(pick(L.parseLogLine(`${d};1.234,56 €;IKEA;Visa`)), [123456, 'IKEA', 'Visa']);
+  // Filialnummern sind kein Betrag.
+  assert.deepEqual(L.parseLogLine(`${d};REWE Markt 1234;Visa`), { ok: false, error: 'amount' });
+});
+
+test('parseLogLine: Wallet-Mitteilung (Titel ; Untertitel ; Text)', () => {
+  const d = '2026-10-22T15:50:00+02:00';
+  const pick = (r) => [r.amountCents, r.merchant, r.card];
+  assert.deepEqual(pick(L.parseLogLine(`${d};REWE Markt;;42,17 € mit Visa`)), [4217, 'REWE Markt', 'Visa']);
+  assert.deepEqual(pick(L.parseLogLine(`${d};Bäckerei Schmidt;Apple Card;3,45 €`)), [345, 'Bäckerei Schmidt', 'Apple Card']);
+  // Wallet-Mitteilungen ohne Betrag (z. B. Bordkarte) werden übersprungen.
+  assert.deepEqual(L.parseLogLine(`${d};Lufthansa;Boarding beginnt;Gate B12`), { ok: false, error: 'amount' });
+});

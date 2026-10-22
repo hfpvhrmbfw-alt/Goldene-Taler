@@ -1,31 +1,37 @@
-# Kurzbefehl einrichten (iOS 17 oder neuer)
+# Kurzbefehl einrichten (iOS 26)
 
 Apple lässt fertige Kurzbefehle nur signiert teilen, deshalb einmal von Hand anlegen. Dauert etwa drei Minuten.
 
-1. App **Kurzbefehle** öffnen › unten **Automation** › **+** › **Transaktion**.
-2. **Karte**: alle Apple-Pay-Karten auswählen. **Kategorie**: alle lassen.
-   **Sofort ausführen** wählen (und *Bei Ausführung benachrichtigen* nach Wunsch aus) › **Weiter** › **Neuer leerer Kurzbefehl**.
-3. Aktion **Datum formatieren**
+Wie bei Tael löst die **Mitteilung von Wallet** den Kurzbefehl aus. Sie kommt nach jeder Apple-Pay-Zahlung
+und enthält Händler, Betrag und Karte in den Feldern *Titel*, *Untertitel* und *Text*. Welches Feld was
+enthält, unterscheidet sich je nach Bank. Das ist egal, die App findet den Betrag selbst.
+
+1. App **Kurzbefehle** › **Automation** › **+** › **Mitteilung**.
+   App: **Wallet**. **Sofort ausführen** wählen › **Weiter** › **Neuer leerer Kurzbefehl**.
+2. Aktion **Datum formatieren**
    - Datum: *Aktuelles Datum*
    - Datumsformat: **ISO 8601**, **Uhrzeit einschließen** an
-4. Aktion **Text**, Inhalt genau so (Teile in Klammern sind Variablen):
+3. Aktion **Text**. Nichts abtippen außer den Semikolons: Jeder Teil ist eine blaue Variablen-Blase.
 
    ```
-   [Formatiertes Datum];[Betrag];[Händler];[Name]
+   (Formatiertes Datum) ; (Titel) ; (Untertitel) ; (Text)
    ```
 
-   Variablen einfügen: in das Textfeld tippen › über der Tastatur *Kurzbefehl-Eingabe* wählen ›
-   die Variable antippen und das Feld (**Betrag**, **Händler**, **Name**) auswählen. *Name* ist der Kartenname,
-   je nach iOS-Version heißt das Feld auch *Karte oder Ausweis*. Zwischen den Feldern jeweils ein Semikolon `;`.
-5. Aktion **An Textdatei anhängen**
-   - Text: *Text* (aus Schritt 4)
-   - Dateipfad: `Shortcuts/ausgaben.txt`
-   - **Neue Zeile anfangen** an
-6. **Fertig**.
+   - Ins Textfeld tippen, über der Tastatur **Formatiertes Datum** wählen, `;` tippen.
+   - Über der Tastatur **Kurzbefehleingabe** wählen, die blaue Blase antippen und unter „Laden“ **Titel** wählen.
+     Falls die Liste das nicht anbietet: bei *Typ* zuerst **Mitteilung** einstellen. `;` tippen.
+   - Genauso mit **Untertitel**, `;`, und **Text** (der Mitteilungstext).
+4. Aktion **An Textdatei anhängen**
+   - Text: die gelbe Variable **Text** aus Schritt 3
+   - Ordner **Shortcuts**, Dateipfad `ausgaben.txt`
+   - **Neue Zeile erstellen** an
+5. **Fertig**.
 
-Testen: im Kurzbefehl unten auf ▶ tippen geht nicht ohne echte Zahlung. Am einfachsten nach der nächsten
-Apple-Pay-Zahlung in der App **Dateien › iCloud Drive › Shortcuts › ausgaben.txt** öffnen. Steht dort eine
-Zeile wie `2026-10-20T18:55:41+02:00;42,17 €;REWE;Visa`, ist alles richtig.
+Testen: nach der nächsten Apple-Pay-Zahlung in **Dateien › iCloud Drive › Shortcuts** die Datei
+`ausgaben.txt` öffnen. Dort steht dann eine Zeile wie
+`2026-10-22T15:50:00+02:00;REWE Markt;;42,17 € mit Visa`.
 
-Wenn ein Feld leer bleibt oder vertauscht ist (je nach Bank unterschiedlich): Reihenfolge in Schritt 4
-anpassen. Die App erwartet immer Datum;Betrag;Händler;Karte.
+Andere Wallet-Mitteilungen ohne Betrag (Bordkarten, Tickets) landen auch in der Datei. Die App überspringt sie
+beim Einlesen.
+
+Die App liest: Datum vorne, den Betrag in irgendeinem Feld, vom Rest das erste Feld als Händler und das letzte als Karte.
