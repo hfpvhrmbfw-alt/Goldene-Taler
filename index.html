@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FAFAF8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E0E0E" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Goldene Taler">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Goldene Taler</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Asap:wght@400;500;600&family=Chivo+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="apphead"><div class="wrap">
+    <span class="spacer" aria-hidden="true"></span>
+    <h1 id="head-title">goldene taler</h1>
+    <button class="iconbtn" id="add-btn" type="button" aria-label="Buchung hinzufügen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+  </div></header>
+
+  <main class="wrap">
+    <section id="view-overview"></section>
+    <section id="view-list" hidden></section>
+    <section id="view-rules" hidden></section>
+    <section id="view-data" hidden></section>
+  </main>
+
+  <nav class="tabbar" aria-label="Bereiche"><div class="wrap">
+    <a href="#overview" data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v8h8"/></svg>übersicht</a>
+    <a href="#list" data-tab="list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7h11M9 12h11M9 17h11M4 7h.01M4 12h.01M4 17h.01"/></svg>buchungen</a>
+    <a href="#rules" data-tab="rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>regeln</a>
+    <a href="#data" data-tab="data"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>daten</a>
+  </div></nav>
+</div>
+
+<dialog class="sheet" id="edit-dialog" aria-labelledby="edit-title">
+  <form method="dialog" id="edit-form" class="stack">
+    <h2 id="edit-title">buchung</h2>
+    <label class="field"><span class="cap">händler</span><input name="merchant" required autocomplete="off"></label>
+    <div class="two">
+      <label class="field"><span class="cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
+      <label class="field"><span class="cap">karte</span><input name="card" autocomplete="off"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span class="cap">datum</span><input name="date" type="date" required></label>
+      <label class="field"><span class="cap">uhrzeit</span><input name="time" type="time"></label>
+    </div>
+    <label class="field"><span class="cap">kategorie</span><select name="categoryId"></select></label>
+    <div id="rule-offer" class="note" hidden>
+      <label><input type="checkbox" name="makeRule" checked><span>Künftig alle Zahlungen bei <input name="rulePattern" class="inline-input" aria-label="Muster"> so einordnen</span></label>
+    </div>
+    <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
+    <p class="err-text" id="edit-error" role="alert" hidden></p>
+    <div class="actions">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
+    <button class="btn danger" value="delete" id="edit-delete" formnovalidate>löschen</button>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="confirm-dialog" aria-labelledby="confirm-text">
+  <form method="dialog">
+    <p id="confirm-text"></p>
+    <div class="actions">
+      <button class="btn primary" value="ok" id="confirm-ok">ok</button>
+      <button class="btn" value="cancel" id="confirm-cancel">abbrechen</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

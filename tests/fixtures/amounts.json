@@ -1,0 +1,14 @@
+[
+  {"in": "12,34 €", "cents": 1234, "currency": "EUR"},
+  {"in": "€12.34", "cents": 1234, "currency": "EUR"},
+  {"in": "1.234,56 €", "cents": 123456, "currency": "EUR"},
+  {"in": "1,234.56 $", "cents": 123456, "currency": "USD"},
+  {"in": "-5,00 €", "cents": -500, "currency": "EUR"},
+  {"in": "EUR 3,2", "cents": 320, "currency": "EUR"},
+  {"in": "7 €", "cents": 700, "currency": "EUR"},
+  {"in": "1.234 €", "cents": 123400, "currency": "EUR"},
+  {"in": "CHF 4.50", "cents": 450, "currency": "CHF"},
+  {"in": "0,99", "cents": 99, "currency": null},
+  {"in": "", "result": null},
+  {"in": "abc", "result": null}
+]
