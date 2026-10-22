@@ -6,10 +6,15 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking. Gesta
 
 ## Nutzung
 
-1. Kurzbefehl einrichten: siehe [KURZBEFEHL.md](KURZBEFEHL.md) (auch in der App unter **Daten**).
+1. Kurzbefehl einrichten: siehe [KURZBEFEHL.md](KURZBEFEHL.md) (auch in der App unter **Einstellungen › Kurzbefehl einrichten**).
 2. https://hfpvhrmbfw-alt.github.io/Goldene-Taler/ in Safari öffnen, dann **Teilen › Zum Home-Bildschirm**.
-3. In der App **Daten › Datei wählen › iCloud Drive › Shortcuts › ausgaben.txt**. Immer die ganze Datei
-   importieren, bekannte Zahlungen werden übersprungen, gelöschte kommen nicht zurück.
+3. In der Übersicht **Neue Zahlungen einlesen › iCloud Drive › Shortcuts › ausgaben.txt**. Immer die ganze Datei
+   wählen, bekannte Zahlungen werden übersprungen, gelöschte kommen nicht zurück. Wallet-Mitteilungen ohne Betrag
+   (Bordkarten, Tickets) werden still übersprungen.
+4. **Zahlungen einordnen**: ein Tipp pro Zahlung, Taler merkt sich den Händler auf Wunsch als Regel.
+
+Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
+Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 
 ## Dateiformat des Kurzbefehls
 
@@ -47,6 +52,9 @@ Nach jeder Änderung `VERSION` in `sw.js` hochzählen, sonst laden installierte 
 ## Grenzen
 
 - Summen werden in der eingestellten Währung gerechnet, Beträge in Fremdwährung fließen unverändert ein.
+  Die Übersicht weist darauf hin, wenn ein Monat solche Beträge enthält.
+- Die Schrift folgt auf dem iPhone der Textgröße aus den Einstellungen (`-apple-system-body`); auf dem Gerät noch zu prüfen.
+- Die Zahl am App-Symbol (Zahlungen ohne Kategorie) aktualisiert sich nur, während Taler offen ist.
 - iOS kann Speicher von Web-Apps löschen, wenn sie wochenlang nicht geöffnet werden. Die Textdatei aus dem
   Kurzbefehl bleibt aber vollständig, ein erneuter Import stellt die Zahlungen wieder her. Für Regeln,
   Kategorien und Notizen ab und zu **Sicherung speichern**.

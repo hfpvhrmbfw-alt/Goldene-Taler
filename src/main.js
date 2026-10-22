@@ -4,11 +4,11 @@ import {
   sanitizeTransaction, sanitizeRule, sanitizeSettings, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
 import {
-  parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, categorize, suggestPattern,
+  parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf,
 } from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { IMPORT_ERRORS } from './texts.js';
+import { IMPORT_ERRORS, CATEGORY_LABELS } from './texts.js';
 import * as ui from './ui.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -24,8 +24,12 @@ function clock() {
 
 let db;
 const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [] };
-const view = { tab: 'overview', month: clock().month, listMonth: clock().month, listCategory: undefined, query: '', importReport: '', editing: null };
-const info = { lastImport: null, storageKind: 'indexeddb' };
+const view = {
+  tab: 'overview', month: clock().month,
+  listMonth: clock().month, lastListMonth: clock().month, listCategory: undefined, listMerchant: null, query: '', from: null,
+  importReport: '', fresh: new Set(), editing: null, editingRule: null,
+};
+const info = { lastImport: null, lastBackup: null, storageKind: 'indexeddb', standalone: false, version: '' };
 
 // ---------- Speichern ----------
 async function saveTransactions(list) { await db.putTransactions(list); }
@@ -40,28 +44,70 @@ async function reapplyRules() {
   return changed.length;
 }
 
+// ---------- Rückgängig ----------
+// Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings });
+
+async function restore(snap) {
+  const keepT = new Set(snap.transactions.map((t) => t.id));
+  for (const t of state.transactions) if (!keepT.has(t.id)) await db.deleteTransaction(t.id);
+  const curT = new Map(state.transactions.map((t) => [t.id, t]));
+  await saveTransactions(snap.transactions.filter((t) => curT.get(t.id) !== t));
+  const keepR = new Set(snap.rules.map((r) => r.id));
+  for (const r of state.rules) if (!keepR.has(r.id)) await db.deleteRule(r.id);
+  const curR = new Map(state.rules.map((r) => [r.id, r]));
+  await db.putRules(snap.rules.filter((r) => curR.get(r.id) !== r));
+  Object.assign(state, snap);
+  await db.setMeta('deletedIds', state.deletedIds);
+  await db.setMeta('settings', state.settings);
+}
+
+/** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
+function undoable(msg, snap) {
+  toast(msg, {
+    label: 'rückgängig',
+    async run() { await restore(snap); render(); toast('Rückgängig gemacht'); },
+  });
+}
+
 // ---------- Rendering ----------
+const TABS = { overview: 'Übersicht', list: 'Buchungen', settings: 'Einstellungen', rules: 'Regeln' };
+const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
+
 function render() {
   const c = clock();
   const el = $(`#view-${view.tab}`);
-  if (view.tab === 'overview') ui.renderOverview(el, state, view, c);
+  if (view.tab === 'overview') ui.renderOverview(el, state, view, c, info);
   if (view.tab === 'list') ui.renderList(el, state, view, c);
+  if (view.tab === 'settings') ui.renderSettings(el, state, view, info, c);
   if (view.tab === 'rules') ui.renderRules(el, state);
-  if (view.tab === 'data') ui.renderData(el, state, view, info);
-  document.title = `Taler · ${TAB_TITLES[view.tab]}`;
-  $('#add-btn').style.visibility = view.tab === 'rules' || view.tab === 'data' ? 'hidden' : 'visible';
+  document.title = `Taler · ${TABS[view.tab]}`;
+  $('#add-btn').hidden = !(view.tab === 'overview' || view.tab === 'list');
+  const back = view.tab === 'rules' ? ['settings', 'einstellungen'] : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht'] : null;
+  $('#head-left').innerHTML = back
+    ? `<button class="backbtn" type="button" data-act="back" data-tab="${back[0]}">${BACK}<span>${back[1]}</span></button>` : '';
+  updateBadge();
 }
 
-const TAB_TITLES = { overview: 'Übersicht', list: 'Buchungen', rules: 'Regeln', data: 'Daten' };
+/** Zahl am Home-Bildschirm-Icon: Zahlungen ohne Kategorie (iOS 16.4+, nur installiert). */
+function updateBadge() {
+  const n = state.transactions.filter((t) => !t.categoryId).length;
+  try {
+    if (n && navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {});
+    else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
+  } catch { /* nicht unterstützt */ }
+}
 
-function selectTab(tab) {
-  if (!TAB_TITLES[tab]) tab = 'overview';
+function selectTab(tab, { keepFrom = false } = {}) {
+  if (!TABS[tab]) tab = 'overview';
+  if (tab !== 'overview') view.importReport = '';
   view.tab = tab;
+  if (!keepFrom) view.from = null;
+  const navTab = tab === 'rules' ? 'settings' : tab;
   for (const a of document.querySelectorAll('.tabbar a')) {
-    const on = a.dataset.tab === tab;
-    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
-    $(`#view-${a.dataset.tab}`).hidden = !on;
+    if (a.dataset.tab === navTab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
+  for (const t of Object.keys(TABS)) $(`#view-${t}`).hidden = t !== tab;
   try { sessionStorage.setItem('taler:tab', tab); } catch { /* egal */ }
   render();
   window.scrollTo(0, 0);
@@ -80,12 +126,17 @@ function ask(text, okLabel = 'OK', { danger = false, cancel = true } = {}) {
 }
 
 let toastTimer;
-function toast(msg) {
+let toastAction = null;
+function toast(msg, action = null) {
   const t = $('#toast');
-  t.textContent = msg;
+  $('#toast-text').textContent = msg;
+  const b = $('#toast-action');
+  toastAction = action;
+  b.hidden = !action;
+  if (action) b.textContent = action.label;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+  toastTimer = setTimeout(() => { t.hidden = true; toastAction = null; }, action ? 6000 : 3200);
 }
 
 function download(name, content, type) {
@@ -97,23 +148,64 @@ function download(name, content, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Datei weitergeben: auf dem iPhone über das Teilen-Menü („In Dateien sichern“), sonst als Download. false = abgebrochen. */
+async function saveFile(name, content, type) {
+  try {
+    const file = new File([content], name, { type });
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file] });
+      return true;
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') return false;
+  }
+  download(name, content, type);
+  return true;
+}
+
+async function saveBackup() {
+  const c = clock();
+  const ok = await saveFile(`taler-sicherung-${c.today}.json`, JSON.stringify(buildExport(state, c.iso), null, 2), 'application/json');
+  if (!ok) return;
+  info.lastBackup = c.today;
+  await db.setMeta('lastBackup', info.lastBackup);
+  render();
+  toast('Sicherung gespeichert');
+}
+
 // ---------- Import ----------
-async function importLog(text) {
-  const { transactions, errors } = parseLog(text, state.settings.currency);
-  const categorized = applyRules(transactions, state.rules);
+async function importLog(text, { demo = false } = {}) {
+  const snap = snapshot();
+  const parsed = parseLog(text, state.settings.currency);
+  let incoming = parsed.transactions;
+  if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
+  const categorized = applyRules(incoming, state.rules);
   const { transactions: merged, added } = mergeTransactions(state.transactions, categorized, state.deletedIds);
   state.transactions = merged;
   if (added.length) await saveTransactions(added);
-  const c = clock();
-  info.lastImport = { when: `${ui.dayLabel(c.today, c.today, c.yesterday)}, ${c.time}`, added: added.length };
-  await db.setMeta('lastImport', info.lastImport);
-  view.importReport = ui.importReportHtml(added.length, transactions.length - added.length, errors);
-  if (added.length) {
-    const newest = sortTransactions(added)[0];
-    view.month = monthOf(newest.date);
+  if (demo) {
+    view.importReport = '';
+  } else {
+    const c = clock();
+    const ignoredNew = Math.max(0, parsed.ignored.length - (info.lastImport?.ignored ?? 0));
+    info.lastImport = { at: c.today, time: c.time, added: added.length, ignored: parsed.ignored.length };
+    await db.setMeta('lastImport', info.lastImport);
+    view.importReport = ui.importReportHtml(added.length, incoming.length - added.length, parsed.errors, ignoredNew);
   }
+  view.fresh = new Set(added.map((t) => t.id));
+  if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
+  selectTab('overview');
+  if (added.length) undoable(demo ? 'Beispieldaten geladen' : `${added.length} neue ${added.length === 1 ? 'Zahlung' : 'Zahlungen'} eingelesen`, snap);
+  else toast('Keine neuen Zahlungen');
+}
+
+async function removeDemo() {
+  const snap = snapshot();
+  const demo = state.transactions.filter((t) => t.source === 'demo');
+  for (const t of demo) await db.deleteTransaction(t.id);
+  state.transactions = state.transactions.filter((t) => t.source !== 'demo');
   render();
-  toast(added.length ? `${added.length} neue Zahlungen importiert` : 'Keine neuen Zahlungen');
+  undoable(`${demo.length} Beispielbuchungen entfernt`, snap);
 }
 
 async function restoreBackup(text) {
@@ -130,6 +222,8 @@ async function restoreBackup(text) {
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
+  if (info.lastImport) await db.setMeta('lastImport', info.lastImport);
+  if (info.lastBackup) await db.setMeta('lastBackup', info.lastBackup);
   render();
   toast(r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen');
 }
@@ -170,7 +264,7 @@ function openEditor(id) {
   $('#edit-error').hidden = true;
   $('#edit-delete').hidden = !id;
   $('#edit-title').textContent = id ? 'buchung ändern' : 'neue buchung';
-  $('#edit-dialog').showModal();
+  openSheet($('#edit-dialog'));
   if (!id) f.merchant.focus();
 }
 
@@ -193,6 +287,7 @@ async function saveEditor() {
     $('#edit-error').hidden = false;
     return false;
   }
+  const snap = snapshot();
   const cat = f.categoryId.value || null;
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let categoryId = cat;
@@ -211,19 +306,20 @@ async function saveEditor() {
     state.rules = rules;
     await db.putRules([rule]);
     const n = await reapplyRules();
-    toast(`Regel „${rule.pattern}“ gespeichert${n ? `, ${n} weitere eingeordnet` : ''}`);
+    undoable(`Regel „${rule.pattern}“ gespeichert${n ? `, ${n} weitere eingeordnet` : ''}`, snap);
   } else {
-    toast(t.id ? 'Gespeichert' : 'Buchung hinzugefügt');
+    undoable(t.id ? 'Gespeichert' : 'Buchung hinzugefügt', snap);
   }
   render();
   return true;
 }
 
+/** Löschen ohne Rückfrage, dafür mit „rückgängig“. */
 async function deleteEditing() {
   const t = view.editing;
   if (!t?.id) return false;
-  $('#edit-dialog').close();
-  if (!(await ask(`„${t.merchant}“ löschen?`, 'Löschen', { danger: true }))) { $('#edit-dialog').showModal(); return false; }
+  closeSheet($('#edit-dialog'));
+  const snap = snapshot();
   state.transactions = state.transactions.filter((x) => x.id !== t.id);
   await db.deleteTransaction(t.id);
   if (t.source === 'shortcut') {
@@ -231,14 +327,158 @@ async function deleteEditing() {
     await db.setMeta('deletedIds', state.deletedIds);
   }
   render();
-  toast('Gelöscht');
+  undoable(`„${t.merchant}“ gelöscht`, snap);
   return true;
+}
+
+// ---------- Einordnen ----------
+const sorter = { total: 0, skipped: new Set(), last: null };
+
+function sortQueue() {
+  return sortTransactions(state.transactions)
+    .filter((t) => !t.categoryId && monthOf(t.date) === view.month && !sorter.skipped.has(t.id));
+}
+
+function renderSorter() {
+  const q = sortQueue();
+  const t = q[0] || null;
+  ui.renderSorter($('#sort-body'), state, {
+    t, pos: Math.min(sorter.total, Math.max(1, sorter.total - q.length + 1)), total: sorter.total,
+    pattern: t ? suggestPattern(t.merchant) : '', last: sorter.last,
+  }, clock());
+}
+
+function openSorter() {
+  sorter.skipped = new Set();
+  sorter.last = null;
+  sorter.total = sortQueue().length;
+  renderSorter();
+  openSheet($('#sort-dialog'));
+}
+
+async function sortInto(categoryId) {
+  const t = sortQueue()[0];
+  if (!t) return;
+  const snap = snapshot();
+  const next = { ...t, categoryId, manualCategory: true };
+  state.transactions = state.transactions.map((x) => (x.id === t.id ? next : x));
+  await saveTransactions([next]);
+  let n = 0;
+  const pattern = $('#sort-pattern')?.value.trim();
+  if ($('#sort-make-rule')?.checked && pattern) {
+    const { rules, rule } = upsertRule(state.rules, pattern, categoryId, `u-${Date.now().toString(36)}`);
+    state.rules = rules;
+    await db.putRules([rule]);
+    n = await reapplyRules();
+  }
+  sorter.last = { snap, text: `${t.merchant} → ${CATEGORY_LABELS[categoryId]}${n ? ` (+${n})` : ''}` };
+  renderSorter();
+  render();
+}
+
+async function sorterAction(act) {
+  if (act === 'close') { closeSheet($('#sort-dialog')); render(); return; }
+  if (act === 'skip') { const t = sortQueue()[0]; if (t) sorter.skipped.add(t.id); }
+  if (act === 'undo' && sorter.last) { await restore(sorter.last.snap); sorter.last = null; render(); }
+  renderSorter();
+}
+
+// ---------- Regeln ----------
+function openRuleEditor(id) {
+  const r = id ? state.rules.find((x) => x.id === id) : null;
+  view.editingRule = r;
+  const f = $('#rule-form');
+  f.pattern.value = r ? r.pattern : '';
+  f.categoryId.innerHTML = ui.categoryOptions(r ? r.categoryId : 'lebensmittel', { withNone: false });
+  $('#rule-title').textContent = r ? 'regel ändern' : 'neue regel';
+  $('#rule-delete').hidden = !r;
+  openSheet($('#rule-dialog'));
+  if (!r) f.pattern.focus();
+}
+
+async function saveRuleEditor() {
+  const f = $('#rule-form');
+  const r = view.editingRule;
+  const snap = snapshot();
+  if (r) {
+    const next = sanitizeRule({ id: r.id, pattern: f.pattern.value, categoryId: f.categoryId.value });
+    if (!next) return false;
+    const rules = editRule(state.rules, r.id, next.pattern, next.categoryId);
+    for (const old of state.rules) if (!rules.some((x) => x.id === old.id)) await db.deleteRule(old.id);
+    state.rules = rules;
+    await db.putRules([next]);
+  } else {
+    const { rules, rule } = upsertRule(state.rules, f.pattern.value, f.categoryId.value, `u-${Date.now().toString(36)}`);
+    if (!sanitizeRule(rule)) return false;
+    state.rules = rules;
+    await db.putRules([rule]);
+  }
+  const n = await reapplyRules();
+  render();
+  undoable(`Regel gespeichert${n ? `, ${n} Buchungen neu eingeordnet` : ''}`, snap);
+  return true;
+}
+
+async function deleteRule(id) {
+  const snap = snapshot();
+  const r = state.rules.find((x) => x.id === id);
+  state.rules = state.rules.filter((x) => x.id !== id);
+  await db.deleteRule(id);
+  await reapplyRules();
+  render();
+  undoable(`Regel „${r?.pattern}“ gelöscht`, snap);
+}
+
+async function restoreDefaultRules() {
+  const snap = snapshot();
+  const missing = DEFAULT_RULES.filter((d) => !state.rules.some((r) => r.id === d.id || r.pattern === d.pattern));
+  state.rules = orderRules([...state.rules, ...missing]);
+  await db.putRules(missing);
+  const n = await reapplyRules();
+  render();
+  undoable(`${missing.length} Vorgaben wiederhergestellt${n ? `, ${n} Buchungen eingeordnet` : ''}`, snap);
+}
+
+// ---------- Sheets: Hintergrund tippen oder nach unten wischen schließt ----------
+function openSheet(d) { d.style.transform = ''; d.returnValue = ''; d.showModal(); }
+function closeSheet(d, value = 'cancel') { if (d.open) d.close(value); }
+
+function bindSheet(d) {
+  d.addEventListener('click', (e) => {
+    if (e.target !== d) return;
+    const r = d.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) closeSheet(d);
+  });
+  let startY = null;
+  let dy = 0;
+  d.addEventListener('touchstart', (e) => {
+    const r = d.getBoundingClientRect();
+    // Nur am Griff bzw. Kopf und nur, wenn das Sheet ganz oben ist, damit Scrollen und Eingaben ungestört bleiben.
+    if (d.scrollTop > 0 || e.touches[0].clientY - r.top > 64) { startY = null; return; }
+    startY = e.touches[0].clientY;
+    dy = 0;
+  }, { passive: true });
+  d.addEventListener('touchmove', (e) => {
+    if (startY === null) return;
+    dy = Math.max(0, e.touches[0].clientY - startY);
+    d.style.transform = `translateY(${dy}px)`;
+  }, { passive: true });
+  d.addEventListener('touchend', () => {
+    if (startY === null) return;
+    startY = null;
+    if (dy > 90) closeSheet(d);
+    d.style.transform = '';
+  });
 }
 
 // ---------- Ereignisse ----------
 function bind() {
   for (const a of document.querySelectorAll('.tabbar a')) {
-    a.addEventListener('click', (e) => { e.preventDefault(); selectTab(a.dataset.tab); });
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (a.dataset.tab === 'list') { view.listCategory = undefined; view.listMerchant = null; }
+      selectTab(a.dataset.tab);
+    });
   }
 
   document.addEventListener('click', async (e) => {
@@ -247,40 +487,61 @@ function bind() {
     const act = b.dataset.act;
     if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; render(); }
     if (act === 'goto') selectTab(b.dataset.tab);
-    if (act === 'filter-cat') {
-      view.listCategory = b.dataset.cat || null;
+    if (act === 'back') {
+      if (b.dataset.tab === 'overview') { view.listCategory = undefined; view.listMerchant = null; }
+      selectTab(b.dataset.tab);
+    }
+    if (act === 'filter-cat' || act === 'filter-merchant') {
+      view.listCategory = act === 'filter-cat' ? b.dataset.cat || null : undefined;
+      view.listMerchant = act === 'filter-merchant' ? b.dataset.merchant : null;
       view.listMonth = view.month;
+      view.lastListMonth = view.month;
       view.query = '';
-      selectTab('list');
+      view.from = 'overview';
+      selectTab('list', { keepFrom: true });
     }
-    if (act === 'list-month') { view.listMonth = b.dataset.month || null; render(); }
+    if (act === 'list-month' && b.dataset.month) { view.listMonth = b.dataset.month; view.lastListMonth = b.dataset.month; render(); }
+    if (act === 'list-scope') { view.listMonth = b.dataset.scope === 'all' ? null : view.lastListMonth; render(); }
     if (act === 'clear-cat') { view.listCategory = undefined; render(); }
+    if (act === 'clear-merchant') { view.listMerchant = null; render(); }
     if (act === 'edit') openEditor(b.dataset.id);
-    if (act === 'del-rule') {
-      state.rules = state.rules.filter((r) => r.id !== b.dataset.id);
-      await db.deleteRule(b.dataset.id);
-      await reapplyRules();
-      render();
-      toast('Regel gelöscht');
-    }
+    if (act === 'sort') openSorter();
+    if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
+    if (act === 'edit-rule') openRuleEditor(b.dataset.id);
+    if (act === 'new-rule') openRuleEditor(null);
+    if (act === 'restore-std') await restoreDefaultRules();
     if (act === 'import-text') await importLog($('#log-text').value);
-    if (act === 'demo') { await importLog(demoLog()); }
-    if (act === 'export-csv') download(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
-    if (act === 'export-json') {
-      download(`taler-sicherung-${clock().today}.json`, JSON.stringify(buildExport(state, clock().iso), null, 2), 'application/json');
-      await db.setMeta('lastBackup', clock().iso);
-    }
+    if (act === 'demo') await importLog(demoLog(), { demo: true });
+    if (act === 'demo-remove') await removeDemo();
+    if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
+    if (act === 'export-json') await saveBackup();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten.', 'Alles löschen', { danger: true })) {
       await db.clear();
       Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [] });
       await saveRules();
       await db.setMeta('initialized', true);
       info.lastImport = null;
+      info.lastBackup = null;
       view.importReport = '';
       render();
       toast('Alles gelöscht');
     }
   });
+
+  $('#toast-action').addEventListener('click', async () => {
+    const a = toastAction;
+    $('#toast').hidden = true;
+    toastAction = null;
+    if (a) await a.run();
+  });
+
+  $('#sort-dialog').addEventListener('click', async (e) => {
+    const c = e.target.closest('[data-sort-cat]');
+    if (c) { await sortInto(c.dataset.sortCat); return; }
+    const a = e.target.closest('[data-sort]');
+    if (a) await sorterAction(a.dataset.sort);
+  });
+  $('#sort-dialog').addEventListener('close', () => render());
 
   document.addEventListener('change', async (e) => {
     if (e.target.id === 'log-file' || e.target.id === 'backup-file') {
@@ -305,25 +566,15 @@ function bind() {
   });
 
   document.addEventListener('submit', async (e) => {
-    if (e.target.id === 'rule-form') {
-      e.preventDefault();
-      const f = e.target;
-      const { rules, rule } = upsertRule(state.rules, f.pattern.value, f.categoryId.value, `u-${Date.now().toString(36)}`);
-      if (!sanitizeRule(rule)) return;
-      state.rules = rules;
-      await db.putRules([rule]);
-      const n = await reapplyRules();
-      render();
-      toast(`Regel gespeichert${n ? `, ${n} Buchungen eingeordnet` : ''}`);
-    }
     if (e.target.id === 'budget-form') {
       e.preventDefault();
+      const snap = snapshot();
       const v = e.target.budget.value.trim();
       const a = v ? parseAmount(v) : null;
       state.settings = sanitizeSettings({ ...state.settings, monthlyBudgetCents: a ? a.cents : null });
       await db.setMeta('settings', state.settings);
       render();
-      toast(state.settings.monthlyBudgetCents ? 'Budget gespeichert' : 'Budget entfernt');
+      undoable(state.settings.monthlyBudgetCents ? 'Budget gespeichert' : 'Budget entfernt', snap);
     }
   });
 
@@ -331,9 +582,16 @@ function bind() {
   f.categoryId.addEventListener('change', updateRuleOffer);
   f.addEventListener('submit', async (e) => {
     const action = e.submitter?.value;
-    if (action === 'save') { e.preventDefault(); if (await saveEditor()) $('#edit-dialog').close(); }
+    if (action === 'save') { e.preventDefault(); if (await saveEditor()) closeSheet($('#edit-dialog'), 'save'); }
     if (action === 'delete') { e.preventDefault(); await deleteEditing(); }
   });
+  const rf = $('#rule-form');
+  rf.addEventListener('submit', async (e) => {
+    const action = e.submitter?.value;
+    if (action === 'save') { e.preventDefault(); if (await saveRuleEditor()) closeSheet($('#rule-dialog'), 'save'); }
+    if (action === 'delete') { e.preventDefault(); closeSheet($('#rule-dialog')); await deleteRule(view.editingRule.id); }
+  });
+  for (const d of document.querySelectorAll('dialog.sheet')) bindSheet(d);
   $('#add-btn').addEventListener('click', () => openEditor(null));
 }
 
@@ -341,10 +599,12 @@ function bind() {
 async function start() {
   db = await open();
   info.storageKind = db.kind === 'indexeddb' ? 'IndexedDB' : 'localStorage';
+  info.standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   state.transactions = sortTransactions((await db.allTransactions()).map(sanitizeTransaction).filter(Boolean));
   state.settings = sanitizeSettings(await db.getMeta('settings'));
   state.deletedIds = (await db.getMeta('deletedIds')) || [];
   info.lastImport = await db.getMeta('lastImport');
+  info.lastBackup = await db.getMeta('lastBackup');
   if (!(await db.getMeta('initialized'))) {
     await db.putRules(DEFAULT_RULES);
     await db.setMeta('initialized', true);
@@ -355,7 +615,13 @@ async function start() {
   try { tab = sessionStorage.getItem('taler:tab') || tab; } catch { /* egal */ }
   selectTab(tab);
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController) toast('Neue Version bereit', { label: 'neu laden', run: () => location.reload() });
+    });
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
 }
 
 start();
