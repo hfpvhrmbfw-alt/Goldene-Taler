@@ -32,6 +32,6 @@ Testen: nach der nächsten Apple-Pay-Zahlung in **Dateien › iCloud Drive › S
 `2026-10-22T15:50:00+02:00;REWE Markt;;42,17 € mit Visa`.
 
 Andere Wallet-Mitteilungen ohne Betrag (Bordkarten, Tickets) landen auch in der Datei. Die App überspringt sie
-beim Einlesen.
+beim Einlesen still und zeigt nur grau an, wie viele neu dazugekommen sind.
 
 Die App liest: Datum vorne, den Betrag in irgendeinem Feld, vom Rest das erste Feld als Händler und das letzte als Karte.

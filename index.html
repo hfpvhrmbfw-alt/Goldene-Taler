@@ -19,31 +19,50 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<!-- Der Goldtaler: einziges Ornament der App (Icon, Wortbild, Leerzustand). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <radialGradient id="coin-fill" cx=".38" cy=".32" r=".75">
+      <stop offset="0" stop-color="#F9E08A"/><stop offset=".55" stop-color="#E0AE2C"/><stop offset="1" stop-color="#B07E12"/>
+    </radialGradient>
+  </defs>
+  <symbol id="coin" viewBox="0 0 32 32">
+    <circle cx="13" cy="19" r="8" fill="url(#coin-fill)"/>
+    <circle cx="13" cy="19" r="5.6" fill="none" stroke="#FBEAB0" stroke-opacity=".75" stroke-width="1"/>
+    <path d="M13 8.2V5.6M20.6 11.4l1.9-1.9M23.8 19h2.6M20.6 26.6l1.9 1.9" stroke="#E0AE2C" stroke-width="1.8" stroke-linecap="round"/>
+  </symbol>
+</svg>
+
 <div class="app">
   <header class="apphead"><div class="wrap">
-    <span class="spacer" aria-hidden="true"></span>
-    <h1 id="head-title">taler</h1>
-    <button class="iconbtn" id="add-btn" type="button" aria-label="Buchung hinzufügen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+    <span class="headslot" id="head-left"></span>
+    <h1 class="wordmark"><span>taler</span><svg class="coin" aria-hidden="true"><use href="#coin"/></svg></h1>
+    <span class="headslot right"><button class="iconbtn" id="add-btn" type="button" aria-label="Buchung hinzufügen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button></span>
   </div></header>
 
   <main class="wrap">
     <section id="view-overview"></section>
     <section id="view-list" hidden></section>
+    <section id="view-settings" hidden></section>
     <section id="view-rules" hidden></section>
-    <section id="view-data" hidden></section>
   </main>
 
   <nav class="tabbar" aria-label="Bereiche"><div class="wrap">
     <a href="#overview" data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v8h8"/></svg>übersicht</a>
     <a href="#list" data-tab="list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7h11M9 12h11M9 17h11M4 7h.01M4 12h.01M4 17h.01"/></svg>buchungen</a>
-    <a href="#rules" data-tab="rules"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>regeln</a>
-    <a href="#data" data-tab="data"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>daten</a>
+    <a href="#settings" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>einstellungen</a>
   </div></nav>
 </div>
 
+<input type="file" id="log-file" accept=".txt,.csv,text/plain" class="visually-hidden" tabindex="-1" aria-hidden="true">
+<input type="file" id="backup-file" accept=".json,application/json" class="visually-hidden" tabindex="-1" aria-hidden="true">
+
 <dialog class="sheet" id="edit-dialog" aria-labelledby="edit-title">
   <form method="dialog" id="edit-form" class="stack">
-    <h2 id="edit-title">buchung</h2>
+    <div class="sheethead">
+      <h2 id="edit-title">buchung</h2>
+      <button class="textbtn danger" value="delete" id="edit-delete" formnovalidate>löschen</button>
+    </div>
     <label class="field"><span class="cap">händler</span><input name="merchant" required autocomplete="off"></label>
     <div class="two">
       <label class="field"><span class="cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
@@ -59,11 +78,30 @@
     </div>
     <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
     <p class="err-text" id="edit-error" role="alert" hidden></p>
-    <div class="actions">
+    <div class="actions sticky">
       <button class="btn primary" value="save">speichern</button>
       <button class="btn" value="cancel" formnovalidate>abbrechen</button>
     </div>
-    <button class="btn danger" value="delete" id="edit-delete" formnovalidate>löschen</button>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="sort-dialog" aria-labelledby="sort-title">
+  <div id="sort-body"></div>
+</dialog>
+
+<dialog class="sheet" id="rule-dialog" aria-labelledby="rule-title">
+  <form method="dialog" id="rule-form" class="stack">
+    <div class="sheethead">
+      <h2 id="rule-title">regel</h2>
+      <button class="textbtn danger" value="delete" id="rule-delete" formnovalidate>löschen</button>
+    </div>
+    <label class="field"><span class="cap">händler enthält</span><input name="pattern" required placeholder="z. B. rewe to go" autocomplete="off"></label>
+    <label class="field"><span class="cap">kategorie</span><select name="categoryId"></select></label>
+    <p class="muted small">Das Muster muss am Wortanfang im Händlernamen stehen. Längere Muster gewinnen, von Hand gesetzte Kategorien bleiben.</p>
+    <div class="actions sticky">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
   </form>
 </dialog>
 
@@ -77,7 +115,7 @@
   </form>
 </dialog>
 
-<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden><span id="toast-text"></span><button type="button" id="toast-action" hidden></button></div>
 
 <script type="module" src="src/main.js"></script>
 </body>

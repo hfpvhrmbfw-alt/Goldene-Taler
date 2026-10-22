@@ -23,9 +23,11 @@ test('parseDateTime: ISO und deutsch, ohne Zeitzonen-Umrechnung', () => {
 });
 
 test('parseLog: Zeilen, Fehler, doppelte Zeilen, Semikolon im Händler', () => {
-  const { transactions, errors } = L.parseLog(fx('log.txt'));
+  const { transactions, errors, ignored } = L.parseLog(fx('log.txt'));
   assert.equal(transactions.length, 6);
-  assert.deepEqual(errors, [{ line: 5, error: 'fields' }, { line: 6, error: 'amount' }]);
+  assert.deepEqual(errors, [{ line: 5, error: 'fields' }]);
+  // Zeilen ohne Betrag (Bordkarten u. Ä.) sind kein Fehler, sie werden nur gezählt.
+  assert.deepEqual(ignored, [6]);
   const rewe = transactions.filter((t) => t.merchant.startsWith('REWE'));
   assert.equal(rewe.length, 2);
   assert.notEqual(rewe[0].id, rewe[1].id);
@@ -94,6 +96,35 @@ test('monthSummary', () => {
   const past = L.monthSummary(t, '2026-09', '2026-10-20', null);
   assert.equal(past.dailyAverageCents, Math.round(1000 / 30));
   assert.equal(past.budgetLeftCents, null);
+  assert.equal(past.comparedToDay, null);
+  assert.equal(past.monthProgress, 1);
+});
+
+test('monthSummary: Vormonat bis zum gleichen Tag, Fremdwährung', () => {
+  const tx = (id, date, amountCents, currency = 'EUR') => ({ ...M.emptyTransaction(id, date), amountCents, currency });
+  const t = [tx('a', '2026-09-05', 1000), tx('b', '2026-09-25', 5000), tx('c', '2026-10-03', 2000), tx('d', '2026-10-04', 900, 'USD')];
+  const s = L.monthSummary(t, '2026-10', '2026-10-20', null, 'EUR');
+  assert.equal(s.comparedToDay, 20);
+  assert.equal(s.previousToDateCents, 1000);
+  assert.equal(s.previousCents, 6000);
+  assert.ok(Math.abs(s.monthProgress - 20 / 31) < 1e-9);
+  assert.deepEqual(s.foreign, [{ currency: 'USD', cents: 900, count: 1 }]);
+  assert.equal(L.monthSummary(t, '2026-09', '2026-10-20').previousToDateCents, 0);
+});
+
+test('categoriesByUse und editRule', () => {
+  const t = [{ categoryId: 'reisen' }, { categoryId: 'reisen' }, { categoryId: 'abos' }, { categoryId: null }];
+  const order = L.categoriesByUse(t);
+  assert.deepEqual(order.slice(0, 3), ['reisen', 'abos', 'lebensmittel']);
+  assert.equal(order.length, M.CATEGORY_IDS.length);
+  const rules = [{ id: 'u-1', pattern: 'rewe', categoryId: 'lebensmittel' }, { id: 'u-2', pattern: 'rewe to go', categoryId: 'essen' }];
+  const r = L.editRule(rules, 'u-2', 'REWE', 'essen');
+  assert.deepEqual(r, [{ id: 'u-2', pattern: 'rewe', categoryId: 'essen' }]);
+});
+
+test('Beispieldaten haben eine eigene Quelle', () => {
+  const t = M.sanitizeTransaction({ ...M.emptyTransaction('demo-1', '2026-10-01'), source: 'demo' });
+  assert.equal(t.source, 'demo');
 });
 
 test('Kalender: Monate, Vormonat, Tage', () => {
@@ -102,6 +133,9 @@ test('Kalender: Monate, Vormonat, Tage', () => {
   assert.equal(L.daysInMonth('2100-02'), 28);
   assert.equal(L.daysInMonth('2026-04'), 30);
   assert.deepEqual(L.monthsWithData([], '2026-10'), ['2026-10']);
+  assert.equal(L.daysBetween('2026-10-20', '2026-10-22'), 2);
+  assert.equal(L.daysBetween('2026-02-27', '2026-03-01'), 2);
+  assert.equal(L.daysBetween('2026-03-28', '2026-03-30'), 2);
 });
 
 test('suggestPattern', () => {
@@ -116,6 +150,7 @@ test('groupByDay mit Filtern', () => {
   assert.equal(g.length, 1);
   assert.equal(g[0].totalCents, 8434);
   assert.equal(L.groupByDay(t, { categoryId: null }).reduce((a, x) => a + x.items.length, 0), 6);
+  assert.equal(L.groupByDay(t, { merchant: 'MVG Automat' })[0].items.length, 1);
 });
 
 test('Katalog: IDs eindeutig, Kategorien gültig', () => {

@@ -125,17 +125,20 @@ export function parseLogLine(line) {
  * Gleiche Zeilen (seltener Fall) bekommen eine laufende Nummer.
  * @param {string} text
  * @param {string} defaultCurrency
- * @returns {{transactions: import('./model.js').Transaction[], errors: {line: number, error: string}[]}}
+ * Zeilen ohne Betrag (Wallet-Mitteilungen zu Bordkarten, Tickets usw.) sind kein Fehler und landen in `ignored`.
+ * @returns {{transactions: import('./model.js').Transaction[], errors: {line: number, error: string}[], ignored: number[]}}
  */
 export function parseLog(text, defaultCurrency = 'EUR') {
   const seen = new Map();
   const transactions = [];
   const errors = [];
+  const ignored = [];
   String(text || '').split(/\r?\n/).forEach((raw, i) => {
     const line = raw.trim();
     const r = parseLogLine(line);
     if (!r.ok) {
-      if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error });
+      if (r.error === 'amount') ignored.push(i + 1);
+      else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error });
       return;
     }
     const base = `sc-${hashString(line)}`;
@@ -149,7 +152,7 @@ export function parseLog(text, defaultCurrency = 'EUR') {
       categoryId: null, manualCategory: false, note: '', source: 'shortcut',
     }));
   });
-  return { transactions, errors };
+  return { transactions, errors, ignored };
 }
 
 /** Händlername für den Regelvergleich: klein, Leerzeichen vereinheitlicht, vorne und hinten ein Leerzeichen. */
@@ -233,6 +236,10 @@ export function daysInMonth(month) {
  * @property {number} spentCents       Summe der Ausgaben minus Erstattungen
  * @property {number} count
  * @property {number} previousCents    gleicher Wert für den Vormonat
+ * @property {number|null} comparedToDay  laufender Monat: Vormonat nur bis zu diesem Tag verglichen, sonst null
+ * @property {number} previousToDateCents Vormonat bis comparedToDay (sonst = previousCents)
+ * @property {number} monthProgress    vergangener Anteil des Monats, 0..1
+ * @property {{currency: string, cents: number, count: number}[]} foreign  Beträge in anderer Währung (unumgerechnet mitgezählt)
  * @property {number|null} budgetLeftCents
  * @property {number|null} budgetShare  Anteil verbraucht, 0..n
  * @property {number} dailyAverageCents bezogen auf vergangene Tage (laufender Monat) bzw. alle Tage
@@ -245,13 +252,26 @@ export function daysInMonth(month) {
  * @param {string} month   YYYY-MM
  * @param {string} today   YYYY-MM-DD
  * @param {number|null} budgetCents
+ * @param {string} currency  Hauptwährung
  * @returns {MonthSummary}
  */
-export function monthSummary(transactions, month, today, budgetCents = null) {
+export function monthSummary(transactions, month, today, budgetCents = null, currency = 'EUR') {
   const inMonth = transactions.filter((t) => monthOf(t.date) === month);
   const prev = previousMonth(month);
   const spentCents = inMonth.reduce((s, t) => s + t.amountCents, 0);
-  const previousCents = transactions.filter((t) => monthOf(t.date) === prev).reduce((s, t) => s + t.amountCents, 0);
+  const inPrev = transactions.filter((t) => monthOf(t.date) === prev);
+  const previousCents = inPrev.reduce((s, t) => s + t.amountCents, 0);
+  const comparedToDay = monthOf(today) === month ? Number(today.slice(8, 10)) : null;
+  const previousToDateCents = comparedToDay === null ? previousCents
+    : inPrev.filter((t) => Number(t.date.slice(8, 10)) <= comparedToDay).reduce((s, t) => s + t.amountCents, 0);
+  const foreignMap = new Map();
+  for (const t of inMonth) {
+    if (t.currency === currency) continue;
+    const e = foreignMap.get(t.currency) || { currency: t.currency, cents: 0, count: 0 };
+    e.cents += t.amountCents;
+    e.count += 1;
+    foreignMap.set(t.currency, e);
+  }
 
   const order = [...CATEGORY_IDS, null];
   const byCat = new Map();
@@ -286,6 +306,10 @@ export function monthSummary(transactions, month, today, budgetCents = null) {
     spentCents,
     count: inMonth.length,
     previousCents,
+    comparedToDay,
+    previousToDateCents,
+    monthProgress: elapsed / total,
+    foreign: [...foreignMap.values()],
     budgetLeftCents: budgetCents ? budgetCents - spentCents : null,
     budgetShare: budgetCents ? spentCents / budgetCents : null,
     dailyAverageCents: elapsed > 0 ? Math.round(spentCents / elapsed) : 0,
@@ -307,7 +331,7 @@ export function suggestPattern(merchant) {
 /**
  * Buchungen nach Tag gruppiert, für die Liste (neueste zuerst).
  * @param {import('./model.js').Transaction[]} transactions
- * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string}} filter
+ * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null}} filter
  *   categoryId: undefined = alle, null = ohne Kategorie
  * @returns {{date: string, totalCents: number, items: import('./model.js').Transaction[]}[]}
  */
@@ -316,6 +340,7 @@ export function groupByDay(transactions, filter = {}) {
   const list = sortTransactions(transactions).filter((t) =>
     (!filter.month || monthOf(t.date) === filter.month)
     && (filter.categoryId === undefined || t.categoryId === filter.categoryId)
+    && (!filter.merchant || t.merchant === filter.merchant)
     && (!q || t.merchant.toLowerCase().includes(q) || t.note.toLowerCase().includes(q)));
   const groups = [];
   for (const t of list) {
@@ -341,4 +366,27 @@ export function upsertRule(rules, pattern, categoryId, newId) {
   const existing = rules.find((r) => r.pattern === p);
   const rule = existing ? { ...existing, categoryId } : { id: newId, pattern: p, categoryId };
   return { rules: orderRules([...rules.filter((r) => r.id !== rule.id), rule]), rule };
+}
+
+/**
+ * Kategorien nach Häufigkeit, für die Auswahl beim Einordnen: oft genutzte zuerst, sonst feste Reihenfolge.
+ * @returns {string[]}
+ */
+export function categoriesByUse(transactions) {
+  const n = new Map();
+  for (const t of transactions) if (t.categoryId) n.set(t.categoryId, (n.get(t.categoryId) || 0) + 1);
+  return [...CATEGORY_IDS].sort((a, b) => (n.get(b) || 0) - (n.get(a) || 0) || CATEGORY_IDS.indexOf(a) - CATEGORY_IDS.indexOf(b));
+}
+
+/** Ändert Muster oder Kategorie einer Regel. Hat eine andere Regel schon dieses Muster, ersetzt die geänderte sie. */
+export function editRule(rules, id, pattern, categoryId) {
+  const p = String(pattern || '').trim().toLowerCase();
+  const rule = { id, pattern: p, categoryId };
+  return orderRules([...rules.filter((r) => r.id !== id && r.pattern !== p), rule]);
+}
+
+/** Ganze Kalendertage von a bis b (beide YYYY-MM-DD), ohne Uhr und Zeitzone. */
+export function daysBetween(a, b) {
+  const utc = (d) => Date.UTC(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10)));
+  return Math.round((utc(b) - utc(a)) / 86400000);
 }
