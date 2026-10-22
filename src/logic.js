@@ -109,7 +109,8 @@ export function parseLogLine(line) {
     idx = rest.findIndex((p) => AMOUNT_IN_TEXT_RE.test(p));
     if (idx < 0) return { ok: false, error: 'amount' };
     amountText = rest[idx].match(AMOUNT_IN_TEXT_RE)[0];
-    remainder = rest[idx].replace(amountText, ' ').replace(/\s+/g, ' ').replace(/^[\s:–—-]+|[\s:–—-]+$/g, '');
+    remainder = rest[idx].replace(amountText, ' ').replace(/\s+/g, ' ').replace(/^[\s:–—-]+|[\s:–—-]+$/g, '')
+      .replace(/^(?:mit|über|per|via|with|using|bei|at)\s+/i, '');
   }
   const amount = parseAmount(amountText);
   if (!amount) return { ok: false, error: 'amount' };

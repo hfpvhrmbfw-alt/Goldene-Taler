@@ -151,3 +151,12 @@ test('parseLogLine: Betrag in anderem Feld oder im Text', () => {
   // Filialnummern sind kein Betrag.
   assert.deepEqual(L.parseLogLine(`${d};REWE Markt 1234;Visa`), { ok: false, error: 'amount' });
 });
+
+test('parseLogLine: Wallet-Mitteilung (Titel ; Untertitel ; Text)', () => {
+  const d = '2026-10-22T15:50:00+02:00';
+  const pick = (r) => [r.amountCents, r.merchant, r.card];
+  assert.deepEqual(pick(L.parseLogLine(`${d};REWE Markt;;42,17 € mit Visa`)), [4217, 'REWE Markt', 'Visa']);
+  assert.deepEqual(pick(L.parseLogLine(`${d};Bäckerei Schmidt;Apple Card;3,45 €`)), [345, 'Bäckerei Schmidt', 'Apple Card']);
+  // Wallet-Mitteilungen ohne Betrag (z. B. Bordkarte) werden übersprungen.
+  assert.deepEqual(L.parseLogLine(`${d};Lufthansa;Boarding beginnt;Gate B12`), { ok: false, error: 'amount' });
+});

@@ -187,13 +187,12 @@ export function renderData(el, state, view, info) {
 
   <details><summary>kurzbefehl einrichten</summary><div>
     <ol class="steps">
-      <li>App <b>Kurzbefehle</b> öffnen, unten <b>Automation</b>, dann <b>+</b> und <b>Transaktion</b> wählen.</li>
-      <li>Bei <b>Karte</b> alle Apple-Pay-Karten auswählen, bei <b>Kategorie</b> alle lassen. <b>Sofort ausführen</b>, <b>Weiter</b>, <b>Neuer leerer Kurzbefehl</b>.</li>
+      <li>App <b>Kurzbefehle</b>, unten <b>Automation</b>, dann <b>+</b> und <b>Mitteilung</b>. App: <b>Wallet</b>. <b>Sofort ausführen</b>, <b>Weiter</b>, <b>Neuer leerer Kurzbefehl</b>.</li>
       <li>Aktion <b>Datum formatieren</b>: Datum = <i>Aktuelles Datum</i>, Format = <b>ISO 8601</b>, <b>Uhrzeit einschließen</b> an.</li>
-      <li>Aktion <b>Text</b>. Nichts in Klammern abtippen: Jeder Teil ist eine blaue Variablen-Blase, dazwischen nur <code>;</code> tippen.
-        <pre>(Formatiertes Datum) ; (Währungsbetrag) ; (Händler) ; (Name)</pre>
-        <span class="muted">Über der Tastatur <i>Kurzbefehleingabe</i> wählen, die Blase antippen und das Feld auswählen. <i>Währungsbetrag</i> heißt je nach iOS-Version auch <i>Betrag</i>, <i>Name</i> ist der Kartenname.</span></li>
-      <li>Aktion <b>An Textdatei anhängen</b>: Datei = <code>Shortcuts/ausgaben.txt</code>, <b>Neue Zeile anfangen</b> an.</li>
+      <li>Aktion <b>Text</b>. Nichts abtippen außer <code>;</code>: Jeder Teil ist eine blaue Variablen-Blase.
+        <pre>(Formatiertes Datum) ; (Titel) ; (Untertitel) ; (Text)</pre>
+        <span class="muted">Über der Tastatur <i>Kurzbefehleingabe</i> wählen, die Blase antippen und unter „Laden“ das Feld wählen. Fehlt es, bei <i>Typ</i> zuerst <i>Mitteilung</i> einstellen.</span></li>
+      <li>Aktion <b>An Textdatei anhängen</b>: Text = die gelbe Variable <i>Text</i>, Ordner <b>Shortcuts</b>, Dateipfad <code>ausgaben.txt</code>, <b>Neue Zeile erstellen</b> an.</li>
       <li>Fertig. Nach der nächsten Zahlung hier <b>Kurzbefehl-Datei einlesen</b>.</li>
     </ol>
     <div class="note info"><span class="cap">hinweis</span>iOS lässt Kurzbefehle nicht direkt in den Speicher einer Web-App schreiben, deshalb der Weg über die Datei.</div>
