@@ -29,9 +29,12 @@ const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, 
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCategory: undefined, listMerchant: null, query: '', from: null,
-  importReport: '', fresh: new Set(), editing: null, editingRule: null, catsOpen: true,
+  importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true },
 };
-try { view.catsOpen = localStorage.getItem('taler:cats') !== 'zu'; } catch { /* egal */ }
+// Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
+for (const k of Object.keys(view.folds)) {
+  try { view.folds[k] = localStorage.getItem(`taler:${k}`) !== 'zu'; } catch { /* egal */ }
+}
 const info = { lastImport: null, lastBackup: null, reviewDismissed: null, storageKind: 'indexeddb', standalone: false, version: '' };
 
 // ---------- Speichern ----------
@@ -675,11 +678,12 @@ function bind() {
     }
   });
 
-  // Kategorien auf- und zuklappen merken (toggle steigt nicht auf, daher capture).
+  // Auf- und Zuklappen merken (toggle steigt nicht auf, daher capture).
   document.addEventListener('toggle', (e) => {
-    if (e.target.dataset?.fold !== 'cats') return;
-    view.catsOpen = e.target.open;
-    try { localStorage.setItem('taler:cats', view.catsOpen ? 'auf' : 'zu'); } catch { /* egal */ }
+    const k = e.target.dataset?.fold;
+    if (!k || !(k in view.folds)) return;
+    view.folds[k] = e.target.open;
+    try { localStorage.setItem(`taler:${k}`, e.target.open ? 'auf' : 'zu'); } catch { /* egal */ }
   }, true);
 
   // Verlauf: antippen oder ziehen zeigt den Tag, loslassen springt zurück auf heute.

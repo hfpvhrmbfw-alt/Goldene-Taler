@@ -85,6 +85,9 @@ export const coin = (cls = '') => `<svg class="coin ${cls}" aria-hidden="true"><
 const item = ({ tag = 'div', attrs = '', cls = '', title, sub = '', n = '', nCls = '', extra = '', chev = false }) =>
   `<li><${tag} class="item${cls ? ` ${cls}` : ''}" ${attrs}><span class="t"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}${extra}</span>${n !== '' ? `<span class="n${nCls ? ` ${nCls}` : ''}">${n}</span>` : ''}${chev ? '<span class="chev" aria-hidden="true">›</span>' : ''}</${tag}></li>`;
 const head = (text) => `<h3 class="cap listhead">${text}</h3>`;
+/** Kopf eines klappbaren Abschnitts; zugeklappt steht `sum` (das Größte) rechts. Schließt mit </details>. */
+const foldOpen = (key, title, sum, view) =>
+  `<details class="fold" data-fold="${key}"${view.folds[key] ? ' open' : ''}><summary><span class="cap">${title}</span><span class="foldsum">${esc(sum)}</span></summary>`;
 
 /** Zeile „neue zahlungen einlesen“: öffnet den Dateiwähler für ausgaben.txt. */
 function importRow(info, today) {
@@ -179,9 +182,7 @@ export function renderOverview(el, state, view, clock, info) {
   // Klappbar; zugeklappt steht die größte Kategorie in der Kopfzeile.
   const cats = s.byCategory.filter((c) => c.categoryId !== null);
   const top = cats[0] && cats[0].cents > 0 ? `${catLabel(cats[0].categoryId)} ${pct(cats[0].share)}` : '';
-  html += `<details class="fold" data-fold="cats"${view.catsOpen ? ' open' : ''}>
-    <summary><span class="cap">kategorien</span><span class="foldsum">${esc(top)}</span></summary>
-    <ul class="list">`;
+  html += `${foldOpen('cats', 'kategorien', top, view)}<ul class="list">`;
   if (s.count === 0) html += `<li class="empty">In diesem Monat noch keine Zahlungen.</li>`;
   cats.forEach((c, i) => {
     html += item({
@@ -201,8 +202,9 @@ export function renderOverview(el, state, view, clock, info) {
   if (view.month === clock.month) html += reviewCard(state, clock, info);
 
   if (s.topMerchants.length) {
-    html += `${head('größte händler')}<ul class="list">
-      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: sumHtml(m.cents, cur), chev: true })).join('')}</ul>`;
+    const m0 = s.topMerchants[0];
+    html += `${foldOpen('merchants', 'größte händler', `${m0.merchant || '—'} ${money(m0.cents, cur)}`, view)}<ul class="list">
+      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: sumHtml(m.cents, cur), chev: true })).join('')}</ul></details>`;
   }
   html += yearBlock(state, view, clock, months);
   if (view.month === clock.month) html += recurringBlock(state, clock);

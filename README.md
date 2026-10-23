@@ -21,7 +21,7 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking. Gesta
    pdf.js direkt im Browser (`vendor/pdfjs`, nichts aus dem Netz), die Datei selbst wird nicht gespeichert.
 
 Die Übersicht zeigt den **Verlauf** des Monats (aufgelaufene Ausgaben Tag für Tag, Vormonat gestrichelt, Budget als Linie;
-antippen oder ziehen zeigt den Stand an einem Tag), darunter die **Kategorien** (klappbar, der Zustand bleibt gemerkt).
+antippen oder ziehen zeigt den Stand an einem Tag), darunter die **Kategorien** und **größten Händler** (beide klappbar, der Zustand bleibt gemerkt).
 Einlesen und Sichern stehen unter **Einstellungen**, die Sicherungs-Erinnerung als Punkt am Reiter.
 Unter den Kategorien zeigt die Übersicht den **Jahresblick** (zwölf Monate, antippbar) und **jeden Monat**
 wiederkehrende Zahlungen (gleicher Betrag in drei Monaten hintereinander). Ein Händler führt zu all seinen Zahlungen
