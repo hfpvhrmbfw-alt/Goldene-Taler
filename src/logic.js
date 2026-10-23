@@ -115,8 +115,10 @@ export function parseLogLine(line) {
   const amount = parseAmount(amountText);
   if (!amount) return { ok: false, error: 'amount' };
   const texts = rest.map((p, i) => (i === idx ? remainder : p)).filter(Boolean);
-  const merchant = texts[0] || '';
-  const card = texts.length >= 2 ? texts[texts.length - 1] : '';
+  // Wallet nennt die Karte oft zweimal (Titel und Mitteilungstext): dann ist sie die Karte, der andere Text der Händler.
+  const twice = texts.find((t, i) => texts.findIndex((u) => u.toLowerCase() === t.toLowerCase()) !== i);
+  const merchant = (twice ? texts.find((t) => t.toLowerCase() !== twice.toLowerCase()) : texts[0]) || '';
+  const card = twice || (texts.length >= 2 ? texts[texts.length - 1] : '');
   return { ok: true, ...dt, amountCents: amount.cents, currency: amount.currency, merchant, card };
 }
 
@@ -133,9 +135,17 @@ export function parseLog(text, defaultCurrency = 'EUR') {
   const transactions = [];
   const errors = [];
   const ignored = [];
-  String(text || '').split(/\r?\n/).forEach((raw, i) => {
-    const line = raw.trim();
-    const r = parseLogLine(line);
+  const lines = String(text || '').split(/\r?\n/).map((raw) => raw.trim());
+  lines.forEach((first, i) => {
+    let line = first;
+    let r = parseLogLine(line);
+    // Mehrzeiliger Mitteilungstext: der Betrag steht dann in der Folgezeile, die selbst kein Datum hat.
+    for (let j = i + 1; !r.ok && r.error === 'amount' && j < lines.length && lines[j] && !parseDateTime(lines[j]); j++) {
+      const joined = `${line} ${lines[j]}`;
+      const rj = parseLogLine(joined);
+      line = joined;
+      if (rj.ok) { r = rj; lines.fill('', i + 1, j + 1); }
+    }
     if (!r.ok) {
       if (r.error === 'amount') ignored.push(i + 1);
       else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error });

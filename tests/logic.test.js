@@ -195,3 +195,14 @@ test('parseLogLine: Wallet-Mitteilung (Titel ; Untertitel ; Text)', () => {
   // Wallet-Mitteilungen ohne Betrag (z. B. Bordkarte) werden übersprungen.
   assert.deepEqual(L.parseLogLine(`${d};Lufthansa;Boarding beginnt;Gate B12`), { ok: false, error: 'amount' });
 });
+
+test('parseLog: Mitteilungstext über zwei Zeilen (echte Datei vom iPhone)', () => {
+  const { transactions, errors, ignored } = L.parseLog(fx('wallet-mehrzeilig.txt'));
+  assert.equal(transactions.length, 1);
+  const t = transactions[0];
+  assert.deepEqual([t.date, t.time, t.amountCents, t.merchant, t.card],
+    ['2026-10-23', '13:41', 362, 'Fleischmarkt Becker', 'Trade Republic']);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(ignored, [1, 2]);
+  assert.equal(L.parseLog(fx('wallet-mehrzeilig.txt')).transactions[0].id, t.id);
+});
