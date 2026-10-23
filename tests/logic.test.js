@@ -206,3 +206,67 @@ test('parseLog: Mitteilungstext über zwei Zeilen (echte Datei vom iPhone)', () 
   assert.deepEqual(ignored, [1, 2]);
   assert.equal(L.parseLog(fx('wallet-mehrzeilig.txt')).transactions[0].id, t.id);
 });
+
+const tx = (id, date, cents, merchant, extra = {}) =>
+  M.sanitizeTransaction({ id, date, amountCents: cents, merchant, currency: 'EUR', source: 'manual', ...extra });
+
+test('nicht mitzählen: fehlt in Monats- und Tagessummen, bleibt aber in der Liste', () => {
+  const list = [tx('a', '2026-10-02', 1000, 'REWE'), tx('b', '2026-10-02', 5000, 'Kaution', { excluded: true })];
+  const s = L.monthSummary(list, '2026-10', '2026-10-23');
+  assert.equal(s.spentCents, 1000);
+  assert.equal(s.count, 1);
+  const [g] = L.groupByDay(list, { month: '2026-10' });
+  assert.equal(g.items.length, 2);
+  assert.equal(g.totalCents, 1000);
+  assert.equal(M.sanitizeTransaction({ ...list[1] }).excluded, true);
+  assert.equal(M.sanitizeTransaction({ ...list[1], excluded: 'ja' }).excluded, false);
+});
+
+test('yearSummary: Monate, Durchschnitt nur über abgeschlossene Monate, Vorjahr bis heute', () => {
+  const list = [
+    tx('a', '2026-08-10', 10000, 'X'), tx('b', '2026-09-10', 20000, 'X'), tx('c', '2026-10-01', 5000, 'X'),
+    tx('d', '2025-10-20', 7000, 'X'), tx('e', '2025-11-20', 9000, 'X'), tx('f', '2026-09-11', 999, 'X', { excluded: true }),
+  ];
+  const y = L.yearSummary(list, '2026', '2026-10-23');
+  assert.equal(y.totalCents, 35000);
+  assert.equal(y.months[8].cents, 20000);
+  assert.equal(y.averageCents, 15000);
+  assert.equal(y.maxCents, 20000);
+  assert.equal(y.previousCents, 7000);
+  const last = L.yearSummary(list, '2025', '2026-10-23');
+  assert.equal(last.averageCents, 5333); // Oktober bis Dezember, Dezember ohne Ausgaben
+  assert.equal(last.previousCents, null);
+});
+
+test('merchantSummary: Jahr und insgesamt', () => {
+  const list = [tx('a', '2025-12-01', 1000, 'REWE'), tx('b', '2026-01-05', 3000, 'REWE'), tx('c', '2026-02-01', 500, 'Lidl')];
+  const m = L.merchantSummary(list, 'REWE', '2026-10-23');
+  assert.deepEqual([m.count, m.totalCents, m.yearCount, m.yearCents, m.averageCents, m.firstDate], [2, 4000, 1, 3000, 2000, '2025-12-01']);
+});
+
+test('monthReview: Summe, Vormonat, größte Kategorie, häufigster Händler, größte Zahlung', () => {
+  const list = [
+    tx('a', '2026-09-01', 1000, 'REWE', { categoryId: 'lebensmittel' }), tx('b', '2026-09-08', 1200, 'REWE', { categoryId: 'lebensmittel' }),
+    tx('c', '2026-09-09', 4000, 'IKEA', { categoryId: 'haushalt' }), tx('d', '2026-08-09', 3000, 'IKEA'),
+  ];
+  const r = L.monthReview(list, '2026-09');
+  assert.equal(r.spentCents, 6200);
+  assert.equal(r.previousCents, 3000);
+  assert.deepEqual(r.topCategory, { categoryId: 'haushalt', cents: 4000 });
+  assert.equal(r.topMerchant.merchant, 'REWE');
+  assert.equal(r.largest.merchant, 'IKEA');
+  assert.equal(L.monthReview(list, '2026-07'), null);
+});
+
+test('detectRecurring: monatlich gleich, nicht wöchentliche Einkäufe, nicht beendete', () => {
+  const list = [
+    tx('s1', '2026-07-03', 1099, 'Spotify P1234'), tx('s2', '2026-08-03', 1099, 'Spotify P5678'),
+    tx('s3', '2026-09-03', 1099, 'Spotify P9'), tx('s4', '2026-10-03', 1199, 'Spotify P10'),
+    tx('n1', '2026-08-15', 1399, 'Netflix'), tx('n2', '2026-09-15', 1399, 'Netflix'),
+    tx('g1', '2026-04-01', 999, 'Gym'), tx('g2', '2026-05-01', 999, 'Gym'), tx('g3', '2026-06-01', 999, 'Gym'),
+    ...['08', '09', '10'].flatMap((m) => [tx(`r${m}a`, `2026-${m}-02`, 4000, 'REWE'), tx(`r${m}b`, `2026-${m}-09`, 4100, 'REWE')]),
+  ];
+  const r = L.detectRecurring(list, '2026-10-23');
+  assert.equal(r.length, 1);
+  assert.deepEqual([r[0].merchant, r[0].monthlyCents, r[0].yearlyCents, r[0].since], ['Spotify P10', 1199, 14388, '2026-07']);
+});

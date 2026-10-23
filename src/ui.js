@@ -1,6 +1,9 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
 import { CATEGORY_IDS } from './model.js';
-import { monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween } from './logic.js';
+import {
+  monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween,
+  yearSummary, merchantSummary, monthReview, detectRecurring,
+} from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
 import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
 
@@ -57,6 +60,8 @@ export function sinceLabel(date, today) {
   return `vor ${n} tagen`;
 }
 const pct = (x) => `${Math.round(x * 100)} %`;
+/** Veränderung in Prozent mit Vorzeichen, null ohne Vergleichswert. */
+const change = (now, before) => (before > 0 ? `${now >= before ? '+' : '−'}${Math.round(Math.abs(now - before) / before * 100)} %` : null);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 export function categoryOptions(selected, { withNone = true } = {}) {
@@ -166,6 +171,7 @@ export function renderOverview(el, state, view, clock, info) {
     html += item({ tag: 'button', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, chev: true });
   }
   html += `</ul>${view.importReport || ''}`;
+  if (view.month === clock.month) html += reviewCard(state, clock, info);
 
   const cats = s.byCategory.filter((c) => c.categoryId !== null);
   html += `${head('kategorien')}<ul class="list">`;
@@ -182,9 +188,73 @@ export function renderOverview(el, state, view, clock, info) {
 
   if (s.topMerchants.length) {
     html += `${head('häufigste händler')}<ul class="list">
-      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: money(m.cents, cur) })).join('')}</ul>`;
+      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: money(m.cents, cur), chev: true })).join('')}</ul>`;
   }
+  html += yearBlock(state, view, clock, months);
+  if (view.month === clock.month) html += recurringBlock(state, clock);
   el.innerHTML = html;
+}
+
+const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+
+/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. */
+function yearBlock(state, view, clock, months) {
+  const cur = state.settings.currency;
+  const year = view.month.slice(0, 4);
+  const y = yearSummary(state.transactions, year, clock.today);
+  if (!y.months.some((m) => m.count)) return '';
+  const bars = y.months.map((m, i) => {
+    const h = y.maxCents > 0 ? Math.max(0, m.cents) / y.maxCents : 0;
+    const can = months.includes(m.month);
+    const label = `${MONTHS[i]}: ${m.count ? money(m.cents, cur) : 'keine Zahlungen'}`;
+    return `<button class="ybar${m.month === view.month ? ' on' : ''}${m.month > clock.month ? ' future' : ''}" data-act="month" data-month="${can ? m.month : ''}" ${can ? '' : 'disabled'} aria-label="${esc(label)}"${m.month === view.month ? ' aria-current="true"' : ''}>`
+      + `<span class="col"><i style="height:${(h * 100).toFixed(1)}%"></i></span><span class="lbl" aria-hidden="true">${MONTH_INITIALS[i]}</span></button>`;
+  }).join('');
+  const notes = [];
+  if (y.averageCents !== null) notes.push(`ø ${money(y.averageCents, cur)} pro monat`);
+  const ch = y.previousCents !== null ? change(y.totalCents, y.previousCents) : null;
+  if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
+  return `${head(`jahr ${year}`)}
+  <div class="year">
+    <div class="yearhead"><span class="v">${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
+    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}">${bars}</div>
+  </div>`;
+}
+
+/** Wiederkehrende Zahlungen (Abos), nur im laufenden Monat. */
+function recurringBlock(state, clock) {
+  const cur = state.settings.currency;
+  const list = detectRecurring(state.transactions, clock.today).filter((r) => r.currency === cur);
+  if (!list.length) return '';
+  const monthly = list.reduce((a, r) => a + r.monthlyCents, 0);
+  return `${head('jeden monat')}<ul class="list">
+    ${list.map((r) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr`, n: money(r.monthlyCents, cur), chev: true })).join('')}
+  </ul>
+  <p class="barnote">Zusammen ${money(monthly, cur)} im Monat, ${money(monthly * 12, cur)} im Jahr. Erkannt an gleichen Beträgen in mindestens drei Monaten hintereinander.</p>`;
+}
+
+/** Rückblick auf den Vormonat, in den ersten zehn Tagen eines Monats, bis er weggetippt wird. */
+function reviewCard(state, clock, info) {
+  const prev = previousMonth(clock.month);
+  if (Number(clock.today.slice(8, 10)) > 10 || info.reviewDismissed === prev) return '';
+  const r = monthReview(state.transactions, prev);
+  if (!r) return '';
+  const cur = state.settings.currency;
+  const b = state.settings.monthlyBudgetCents;
+  const ch = change(r.spentCents, r.previousCents);
+  const lines = [];
+  if (ch) lines.push(`${ch} zum ${monthName(previousMonth(prev))}`);
+  if (b) lines.push(r.spentCents <= b ? `${money(b - r.spentCents, cur)} unter dem Budget` : `${money(r.spentCents - b, cur)} über dem Budget`);
+  if (r.topCategory) lines.push(`am meisten für ${esc(catLabel(r.topCategory.categoryId))}: ${money(r.topCategory.cents, cur)}`);
+  if (r.topMerchant) lines.push(`am häufigsten bei ${esc(r.topMerchant.merchant)}: ${r.topMerchant.count}×`);
+  if (r.largest.cents > 0) lines.push(`größte Zahlung: ${money(r.largest.cents, cur)} bei ${esc(r.largest.merchant || '—')}`);
+  return `<section class="review" aria-label="Rückblick ${esc(monthLabel(prev))}">
+    <div class="reviewhead"><span class="cap">rückblick ${esc(monthName(prev).toLowerCase())}</span><button class="iconbtn" data-act="review-dismiss" data-month="${prev}" aria-label="Rückblick schließen">${ICON.close}</button></div>
+    <div class="v">${moneyHero(r.spentCents, cur)}</div>
+    <p class="sub">${plural(r.count, 'Zahlung', 'Zahlungen')}</p>
+    <ul>${lines.map((l) => `<li>${l}</li>`).join('')}</ul>
+    <button class="textbtn" data-act="month" data-month="${prev}">${esc(monthName(prev).toLowerCase())} ansehen ›</button>
+  </section>`;
 }
 
 const standaloneNote = () => `<div class="note info"><span class="cap">tipp</span>Öffne Taler über <b>Teilen › Zum Home-Bildschirm</b>. Safari und die App auf dem Home-Bildschirm speichern getrennt.</div>`;
@@ -201,13 +271,14 @@ export function renderList(el, state, view, clock) {
 
   let html = `
   <div class="titlerow">
-    <h2 class="bigtitle">${m ? esc(monthLabel(m)) : 'alle buchungen'}</h2>
+    <h2 class="bigtitle">${view.listMerchant ? esc(view.listMerchant) : m ? esc(monthLabel(m)) : 'alle buchungen'}</h2>
     ${m ? `<div class="pager">
       <button class="iconbtn" data-act="list-month" data-month="${months[idx + 1] || ''}" ${months[idx + 1] ? '' : 'disabled'} aria-label="Vorheriger Monat">${ICON.prev}</button>
       <button class="iconbtn" data-act="list-month" data-month="${months[idx - 1] || ''}" ${idx > 0 ? '' : 'disabled'} aria-label="Nächster Monat">${ICON.next}</button>
     </div>` : ''}
   </div>
-  <p class="meta-line">${plural(count, 'Buchung', 'Buchungen')} · ${money(total, cur)}</p>
+  <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${money(total, cur)}</p>
+  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) : ''}
   <label class="search">${ICON.search}<input type="search" id="f-query" value="${esc(view.query)}" placeholder="suchen" aria-label="Händler oder Notiz suchen"></label>
   <div class="seg" role="group" aria-label="Zeitraum">
     <button data-act="list-scope" data-scope="month" aria-pressed="${!!m}">ein monat</button>
@@ -216,7 +287,7 @@ export function renderList(el, state, view, clock) {
   const chips = [];
   const x = ICON.close.replace('<svg', '<svg width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"');
   if (view.listCategory !== undefined) chips.push(`<button class="chip" data-act="clear-cat" aria-label="Filter ${esc(catLabel(view.listCategory))} entfernen">${esc(catLabel(view.listCategory))} ${x}</button>`);
-  if (view.listMerchant) chips.push(`<button class="chip" data-act="clear-merchant" aria-label="Filter ${esc(view.listMerchant)} entfernen">${esc(view.listMerchant)} ${x}</button>`);
+  if (view.listMerchant) chips.push(`<button class="chip" data-act="clear-merchant" aria-label="Filter ${esc(view.listMerchant)} entfernen">nur ${esc(view.listMerchant)} ${x}</button>`);
   if (chips.length) html += `<div class="chips">${chips.join('')}</div>`;
 
   if (!groups.length) html += `<p class="empty">Keine Buchungen für diese Auswahl.</p>`;
@@ -224,10 +295,10 @@ export function renderList(el, state, view, clock) {
   for (const g of groups) {
     html += `<li class="cap day" role="heading" aria-level="3"><span>${esc(dayLabel(g.date, clock.today, clock.yesterday))}</span><span class="num">${money(g.totalCents, cur)}</span></li>`;
     for (const t of g.items) {
-      const sub = [catLabel(t.categoryId), t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : ''].filter(Boolean).map(esc).join(' · ');
+      const sub = [t.excluded ? 'zählt nicht mit' : '', catLabel(t.categoryId), t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : ''].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
-        tag: 'button', cls: `${t.categoryId ? '' : 'open'}${fresh ? ' fresh' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
+        tag: 'button', cls: `${t.categoryId || t.excluded ? '' : 'open'}${fresh ? ' fresh' : ''}${t.excluded ? ' excluded' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
         title: esc(t.merchant || 'Ohne Händler'), sub,
         n: `${t.amountCents < 0 ? '+' : ''}${money(Math.abs(t.amountCents), t.currency)}`, nCls: t.amountCents < 0 ? 'in' : '',
       });
@@ -235,6 +306,17 @@ export function renderList(el, state, view, clock) {
   }
   html += `</ul>`;
   el.innerHTML = html;
+}
+
+/** Kopf der Händler-Ansicht: dieses Jahr und insgesamt. */
+function merchantKpis(state, merchant, clock) {
+  const cur = state.settings.currency;
+  const s = merchantSummary(state.transactions, merchant, clock.today);
+  if (!s.count) return '';
+  return `<div class="kpis">
+    <div class="kpi"><div class="cap">${clock.today.slice(0, 4)}</div><div class="v">${money(s.yearCents, cur)}</div><div class="sub">${plural(s.yearCount, 'Zahlung', 'Zahlungen')}</div></div>
+    <div class="kpi"><div class="cap">insgesamt</div><div class="v">${money(s.totalCents, cur)}</div><div class="sub">ø ${money(s.averageCents, cur)} · seit ${esc(monthLabel(s.firstDate).toLowerCase())}</div></div>
+  </div>`;
 }
 
 /** Einstellungen: Budget, Regeln, Kurzbefehl, Sicherung, Zurücksetzen. */
@@ -376,9 +458,9 @@ export function statementReportHtml(bank, added, known, dupes, other, errors) {
 /** CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. */
 export function buildCsv(transactions) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz'].map(q).join(';')];
+  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt'].map(q).join(';')];
   for (const t of transactions) {
-    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note].map(q).join(';'));
+    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja'].map(q).join(';'));
   }
   return '﻿' + lines.join('\r\n');
 }

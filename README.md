@@ -19,6 +19,11 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking. Gesta
    früher oder fünf Tage später), kommt nicht doppelt, egal in welcher Reihenfolge eingelesen wird. Das PDF liest
    pdf.js direkt im Browser (`vendor/pdfjs`, nichts aus dem Netz), die Datei selbst wird nicht gespeichert.
 
+Unter den Kategorien zeigt die Übersicht den **Jahresblick** (zwölf Monate, antippbar) und **jeden Monat**
+wiederkehrende Zahlungen (gleicher Betrag in drei Monaten hintereinander). Ein Händler führt zu all seinen Zahlungen
+mit Summe für das Jahr und insgesamt. In den ersten zehn Tagen eines Monats steht oben ein **Rückblick** auf den Vormonat.
+Buchungen, die keine eigene Ausgabe sind (für andere ausgelegt, Kaution), lassen sich auf **nicht mitzählen** stellen.
+
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 

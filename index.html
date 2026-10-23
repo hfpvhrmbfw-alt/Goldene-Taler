@@ -78,6 +78,8 @@
       <label><input type="checkbox" name="makeRule" checked><span>Künftig alle Zahlungen bei <input name="rulePattern" class="inline-input" aria-label="Muster"> so einordnen</span></label>
     </div>
     <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
+    <label class="ruleopt exclopt"><input type="checkbox" name="excluded"><span>Nicht mitzählen<span class="muted small">z. B. für jemand anderen ausgelegt, Kaution, Umbuchung</span></span></label>
+    <button type="button" class="textbtn merchantlink" id="edit-merchant" data-act="show-merchant"></button>
     <p class="err-text" id="edit-error" role="alert" hidden></p>
     <div class="actions sticky">
       <button class="btn primary" value="save">speichern</button>

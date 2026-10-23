@@ -355,3 +355,37 @@ label.item { cursor:pointer; }
 label.item:hover { background:var(--sunken); }
 .item .n { min-width:9ch; }
 .mono { font-family:var(--font-label); }
+
+/* Nicht mitgezählt: Betrag durchgestrichen, Zeile leiser */
+.item.excluded .t > b, .item.excluded .n { color:var(--muted); }
+.item.excluded .n { text-decoration:line-through; text-decoration-thickness:1px; }
+.exclopt > span > span { display:block; margin-top:2px; }
+.merchantlink { display:block; text-align:left; padding:0; margin:0; font-size:calc(15*var(--u)); overflow-wrap:anywhere; }
+.merchantlink[hidden] { display:none; }
+
+/* Jahresblick: zwölf Haarlinien-Säulen */
+.year { margin:var(--s2) 0 var(--s5); }
+.yearhead { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s1) var(--s3); margin-bottom:var(--s3); }
+.yearhead .v { font:var(--title-weight) calc(24*var(--u))/1.15 var(--font-title); font-variant-numeric:tabular-nums; }
+.yearhead .sub { font-size:calc(13*var(--u)); color:var(--muted); }
+.ybars { display:grid; grid-template-columns:repeat(12, 1fr); gap:2px; }
+.ybar { display:flex; flex-direction:column; align-items:stretch; gap:var(--s1); min-height:var(--tap); padding:0; border:0; background:transparent; color:var(--muted); font:400 calc(12*var(--u))/1 var(--font-label); cursor:pointer; border-radius:var(--r-control-s); }
+.ybar:disabled { cursor:default; color:var(--faint); }
+.ybar .col { position:relative; display:block; height:72px; margin:0 3px; border-bottom:1px solid var(--line); }
+.ybar .col i { position:absolute; left:0; right:0; bottom:0; background:var(--faint); border-radius:2px 2px 0 0; }
+.ybar.on .col i { background:var(--accent); }
+.ybar.on .lbl { color:var(--accent-text); font-weight:500; }
+.ybar.future .col { border-bottom-style:dashed; }
+.ybar:not(:disabled):hover .col { background:var(--sunken); }
+
+/* Rückblick auf den Vormonat: der eine reiche Moment */
+.review { border:1px solid var(--line); background:var(--surface); border-radius:var(--r-card); padding:var(--s3) var(--s4) var(--s2); margin:var(--s3) 0 var(--s4); }
+.reviewhead { display:flex; align-items:center; justify-content:space-between; min-height:var(--tap); margin:calc(var(--s3) * -1) 0 0; }
+.reviewhead .cap { color:var(--muted); }
+.reviewhead .iconbtn { margin-right:calc(var(--s3) * -1); }
+.review .v { font:var(--title-weight) calc(32*var(--u))/1.1 var(--font-title); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.review .v small { font-size:.5em; font-weight:500; color:var(--muted); letter-spacing:0; margin-left:1px; }
+.review .sub { margin:2px 0 var(--s3); font-size:calc(13*var(--u)); color:var(--muted); }
+.review ul { list-style:none; margin:0 0 var(--s1); padding:0; }
+.review li { padding:var(--s2) 0; border-top:1px solid var(--line); font-size:calc(15*var(--u)); overflow-wrap:anywhere; }
+.review .textbtn { padding:0; margin:0; }

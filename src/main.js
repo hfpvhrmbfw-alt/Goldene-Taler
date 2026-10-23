@@ -31,7 +31,7 @@ const view = {
   listMonth: clock().month, lastListMonth: clock().month, listCategory: undefined, listMerchant: null, query: '', from: null,
   importReport: '', fresh: new Set(), editing: null, editingRule: null,
 };
-const info = { lastImport: null, lastBackup: null, storageKind: 'indexeddb', standalone: false, version: '' };
+const info = { lastImport: null, lastBackup: null, reviewDismissed: null, storageKind: 'indexeddb', standalone: false, version: '' };
 
 // ---------- Speichern ----------
 async function saveTransactions(list) { await db.putTransactions(list); }
@@ -93,7 +93,7 @@ function render() {
 
 /** Zahl am Home-Bildschirm-Icon: Zahlungen ohne Kategorie (iOS 16.4+, nur installiert). */
 function updateBadge() {
-  const n = state.transactions.filter((t) => !t.categoryId).length;
+  const n = state.transactions.filter((t) => !t.categoryId && !t.excluded).length;
   try {
     if (n && navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {});
     else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
@@ -277,6 +277,13 @@ function demoLog() {
     const cents = Math.max(99, Math.round(c * (0.7 + ((i * 37) % 60) / 100)));
     lines.push(`${localDate(d)}T${pad(8 + (i % 12))}:${pad((i * 13) % 60)}:00;${ui.amountInput(cents)} €;${m};${i % 3 ? 'Visa' : 'Girocard'}`);
   }
+  // Abos: gleicher Betrag am gleichen Tag, vier Monate zurück.
+  for (const [m, c, day] of [['Spotify', 1099, 3], ['Netflix', 1399, 15], ['FitX', 2499, 1]]) {
+    for (let k = 0; k < 4; k++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - k, day, 7, 30);
+      if (d <= now) lines.push(`${localDate(d)}T07:30:00;${ui.amountInput(c)} €;${m};Visa`);
+    }
+  }
   return lines.join('\n');
 }
 
@@ -294,6 +301,11 @@ function openEditor(id) {
   f.time.value = t.time || '';
   f.categoryId.innerHTML = ui.categoryOptions(t.categoryId);
   f.note.value = t.note;
+  f.excluded.checked = !!t.excluded;
+  const ml = $('#edit-merchant');
+  ml.hidden = !id || !t.merchant;
+  ml.dataset.merchant = t.merchant;
+  ml.textContent = `alle zahlungen bei ${t.merchant} ›`;
   f.rulePattern.value = suggestPattern(t.merchant);
   $('#rule-offer').hidden = true;
   $('#edit-error').hidden = true;
@@ -331,6 +343,7 @@ async function saveEditor() {
   const next = sanitizeTransaction({
     ...t, id, merchant: f.merchant.value, amountCents: amount.cents, currency: amount.currency || t.currency || state.settings.currency,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
+    excluded: f.excluded.checked,
   });
   if (!next) return false;
   state.transactions = sortTransactions([...state.transactions.filter((x) => x.id !== id), next]);
@@ -343,7 +356,8 @@ async function saveEditor() {
     const n = await reapplyRules();
     undoable(`Regel „${rule.pattern}“ gespeichert${n ? `, ${n} weitere eingeordnet` : ''}`, snap);
   } else {
-    undoable(t.id ? 'Gespeichert' : 'Buchung hinzugefügt', snap);
+    const ex = next.excluded !== !!t.excluded ? (next.excluded ? ', zählt nicht mit' : ', zählt wieder mit') : '';
+    undoable(`${t.id ? 'Gespeichert' : 'Buchung hinzugefügt'}${ex}`, snap);
   }
   render();
   return true;
@@ -371,7 +385,7 @@ const sorter = { total: 0, skipped: new Set(), last: null };
 
 function sortQueue() {
   return sortTransactions(state.transactions)
-    .filter((t) => !t.categoryId && monthOf(t.date) === view.month && !sorter.skipped.has(t.id));
+    .filter((t) => !t.categoryId && !t.excluded && monthOf(t.date) === view.month && !sorter.skipped.has(t.id));
 }
 
 function renderSorter() {
@@ -520,20 +534,29 @@ function bind() {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
-    if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; render(); }
+    if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; render(); if (b.closest('.review')) window.scrollTo(0, 0); }
     if (act === 'goto') selectTab(b.dataset.tab);
     if (act === 'back') {
       if (b.dataset.tab === 'overview') { view.listCategory = undefined; view.listMerchant = null; }
       selectTab(b.dataset.tab);
     }
-    if (act === 'filter-cat' || act === 'filter-merchant') {
-      view.listCategory = act === 'filter-cat' ? b.dataset.cat || null : undefined;
-      view.listMerchant = act === 'filter-merchant' ? b.dataset.merchant : null;
-      view.listMonth = view.month;
+    if (act === 'filter-cat' || act === 'filter-merchant' || act === 'show-merchant') {
+      const merchant = act !== 'filter-cat';
+      // Händler: alle Zahlungen dort, nicht nur dieser Monat.
+      view.listCategory = merchant ? undefined : b.dataset.cat || null;
+      view.listMerchant = merchant ? b.dataset.merchant : null;
+      view.listMonth = merchant ? null : view.month;
       view.lastListMonth = view.month;
       view.query = '';
-      view.from = 'overview';
+      const from = view.tab === 'overview' ? 'overview' : null;
+      if (act === 'show-merchant') closeSheet($('#edit-dialog'));
+      view.from = from;
       selectTab('list', { keepFrom: true });
+    }
+    if (act === 'review-dismiss') {
+      info.reviewDismissed = b.dataset.month;
+      await db.setMeta('reviewDismissed', info.reviewDismissed);
+      render();
     }
     if (act === 'list-month' && b.dataset.month) { view.listMonth = b.dataset.month; view.lastListMonth = b.dataset.month; render(); }
     if (act === 'list-scope') { view.listMonth = b.dataset.scope === 'all' ? null : view.lastListMonth; render(); }
@@ -646,6 +669,7 @@ async function start() {
   state.deletedIds = (await db.getMeta('deletedIds')) || [];
   info.lastImport = await db.getMeta('lastImport');
   info.lastBackup = await db.getMeta('lastBackup');
+  info.reviewDismissed = await db.getMeta('reviewDismissed');
   if (!(await db.getMeta('initialized'))) {
     await db.putRules(DEFAULT_RULES);
     await db.setMeta('initialized', true);
