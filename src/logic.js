@@ -148,7 +148,7 @@ export function parseLog(text, defaultCurrency = 'EUR') {
     }
     if (!r.ok) {
       if (r.error === 'amount') ignored.push(i + 1);
-      else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error });
+      else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error, text: first.slice(0, 40) });
       return;
     }
     const base = `sc-${hashString(line)}`;
@@ -218,6 +218,31 @@ export function sortTransactions(transactions) {
 /** Zählt eine Buchung in Summen mit? Von Hand ausgenommene (z. B. für andere ausgelegt) nicht. */
 export const counts = (t) => !t.excluded;
 
+/**
+ * Betrag in der Hauptwährung: bei gleicher Währung der Betrag selbst, bei Fremdwährung der von Hand
+ * oder aus dem Kontoauszug eingetragene Euro-Betrag (`baseCents`), sonst null (dann zählt er in keiner Summe).
+ */
+export const baseAmount = (t, currency = 'EUR') =>
+  (t.currency === currency ? t.amountCents : Number.isInteger(t.baseCents) ? t.baseCents : null);
+
+/** Gibt es mitgezählte Buchungen vor diesem Monat? Erst dann ist der Monat selbst vollständig erfasst. */
+export function trackedBefore(transactions, month) {
+  return transactions.some((t) => counts(t) && monthOf(t.date) < month);
+}
+
+/** Fremdwährungsbeträge ohne Euro-Betrag, je Währung summiert. */
+function foreignOf(list, currency) {
+  const map = new Map();
+  for (const t of list) {
+    if (baseAmount(t, currency) !== null) continue;
+    const e = map.get(t.currency) || { currency: t.currency, cents: 0, count: 0 };
+    e.cents += t.amountCents;
+    e.count += 1;
+    map.set(t.currency, e);
+  }
+  return [...map.values()];
+}
+
 /** "2026-10-20" → "2026-10" */
 export const monthOf = (date) => date.slice(0, 7);
 
@@ -249,10 +274,11 @@ export function daysInMonth(month) {
  * @property {number} spentCents       Summe der Ausgaben minus Erstattungen
  * @property {number} count
  * @property {number} previousCents    gleicher Wert für den Vormonat
+ * @property {boolean} previousComplete  Vormonat ab dem ersten Tag erfasst (sonst ist ein Vergleich irreführend)
  * @property {number|null} comparedToDay  laufender Monat: Vormonat nur bis zu diesem Tag verglichen, sonst null
  * @property {number} previousToDateCents Vormonat bis comparedToDay (sonst = previousCents)
  * @property {number} monthProgress    vergangener Anteil des Monats, 0..1
- * @property {{currency: string, cents: number, count: number}[]} foreign  Beträge in anderer Währung (unumgerechnet mitgezählt)
+ * @property {{currency: string, cents: number, count: number}[]} foreign  Fremdwährung ohne Euro-Betrag, in keiner Summe
  * @property {number|null} budgetLeftCents
  * @property {number|null} budgetShare  Anteil verbraucht, 0..n
  * @property {number} dailyAverageCents bezogen auf vergangene Tage (laufender Monat) bzw. alle Tage
@@ -269,22 +295,17 @@ export function daysInMonth(month) {
  * @returns {MonthSummary}
  */
 export function monthSummary(transactions, month, today, budgetCents = null, currency = 'EUR') {
-  const inMonth = transactions.filter((t) => counts(t) && monthOf(t.date) === month);
+  const counted = transactions.filter((t) => counts(t) && monthOf(t.date) === month);
+  // Mit Euro-Betrag; Fremdwährung ohne Umrechnung steht nur in `foreign`.
+  const inMonth = counted.filter((t) => baseAmount(t, currency) !== null).map((t) => ({ ...t, amountCents: baseAmount(t, currency) }));
   const prev = previousMonth(month);
   const spentCents = inMonth.reduce((s, t) => s + t.amountCents, 0);
-  const inPrev = transactions.filter((t) => counts(t) && monthOf(t.date) === prev);
-  const previousCents = inPrev.reduce((s, t) => s + t.amountCents, 0);
+  const inPrev = transactions.filter((t) => counts(t) && monthOf(t.date) === prev && baseAmount(t, currency) !== null);
+  const previousCents = inPrev.reduce((s, t) => s + baseAmount(t, currency), 0);
   const comparedToDay = monthOf(today) === month ? Number(today.slice(8, 10)) : null;
   const previousToDateCents = comparedToDay === null ? previousCents
-    : inPrev.filter((t) => Number(t.date.slice(8, 10)) <= comparedToDay).reduce((s, t) => s + t.amountCents, 0);
-  const foreignMap = new Map();
-  for (const t of inMonth) {
-    if (t.currency === currency) continue;
-    const e = foreignMap.get(t.currency) || { currency: t.currency, cents: 0, count: 0 };
-    e.cents += t.amountCents;
-    e.count += 1;
-    foreignMap.set(t.currency, e);
-  }
+    : inPrev.filter((t) => Number(t.date.slice(8, 10)) <= comparedToDay).reduce((s, t) => s + baseAmount(t, currency), 0);
+  const foreign = foreignOf(counted, currency);
 
   const order = [...CATEGORY_IDS, null];
   const byCat = new Map();
@@ -317,12 +338,13 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
   return {
     month,
     spentCents,
-    count: inMonth.length,
+    count: counted.length,
     previousCents,
+    previousComplete: trackedBefore(transactions, prev),
     comparedToDay,
     previousToDateCents,
     monthProgress: elapsed / total,
-    foreign: [...foreignMap.values()],
+    foreign,
     budgetLeftCents: budgetCents ? budgetCents - spentCents : null,
     budgetShare: budgetCents ? spentCents / budgetCents : null,
     dailyAverageCents: elapsed > 0 ? Math.round(spentCents / elapsed) : 0,
@@ -342,11 +364,25 @@ export function suggestPattern(merchant) {
 }
 
 /**
+ * Soll „künftig alle so einordnen“ vorab angehakt sein? Nur, wenn das Muster eindeutig einen Händler meint:
+ * mindestens zwei Zahlungen passen, und alle gehören zum selben Händler (ohne Filialnummern).
+ * „hotel“ bei einem einzigen Hotel bleibt aus, damit ein Fehltipp nicht gleich zur Regel wird.
+ */
+export function ruleDefault(transactions, pattern) {
+  const p = String(pattern || '').trim().toLowerCase();
+  if (!p) return false;
+  const probe = [{ id: 'probe', pattern: p, categoryId: 'sonstiges' }];
+  const hits = transactions.filter((t) => categorize(t.merchant, probe) === 'sonstiges');
+  return hits.length >= 2 && new Set(hits.map((t) => recurringKey(t.merchant))).size === 1;
+}
+
+/**
  * Buchungen nach Tag gruppiert, für die Liste (neueste zuerst).
  * @param {import('./model.js').Transaction[]} transactions
- * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null}} filter
+ * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null, currency?: string}} filter
  *   categoryId: undefined = alle, null = ohne Kategorie
- * @returns {{date: string, totalCents: number, items: import('./model.js').Transaction[]}[]}  totalCents ohne ausgenommene
+ * @returns {{date: string, totalCents: number, foreign: {currency: string, cents: number, count: number}[], items: import('./model.js').Transaction[]}[]}
+ *   totalCents in der Hauptwährung, ohne ausgenommene; Fremdwährung ohne Euro-Betrag in `foreign`
  */
 export function groupByDay(transactions, filter = {}) {
   const q = (filter.query || '').trim().toLowerCase();
@@ -355,13 +391,15 @@ export function groupByDay(transactions, filter = {}) {
     && (filter.categoryId === undefined || t.categoryId === filter.categoryId)
     && (!filter.merchant || t.merchant === filter.merchant)
     && (!q || t.merchant.toLowerCase().includes(q) || t.note.toLowerCase().includes(q)));
+  const cur = filter.currency || 'EUR';
   const groups = [];
   for (const t of list) {
     let g = groups[groups.length - 1];
     if (!g || g.date !== t.date) { g = { date: t.date, totalCents: 0, items: [] }; groups.push(g); }
     g.items.push(t);
-    if (counts(t)) g.totalCents += t.amountCents;
+    if (counts(t)) g.totalCents += baseAmount(t, cur) ?? 0;
   }
+  for (const g of groups) g.foreign = foreignOf(g.items.filter(counts), cur);
   return groups;
 }
 
@@ -438,29 +476,30 @@ export function findCrossDuplicates(existing, incoming) {
 /**
  * Ein Kalenderjahr in zwölf Monaten, für den Jahresblick.
  * Der Durchschnitt zählt nur abgeschlossene Monate ab dem ersten mit Daten; der Vorjahresvergleich
- * reicht im laufenden Jahr nur bis zum heutigen Tag.
+ * reicht im laufenden Jahr nur bis zum heutigen Tag und fehlt (null), solange das Vorjahr nicht ab Januar erfasst ist.
  * @param {import('./model.js').Transaction[]} transactions
  * @param {string} year   YYYY
  * @param {string} today  YYYY-MM-DD
  * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number,
  *   averageCents: number|null, maxCents: number, previousCents: number|null, comparedTo: string|null}}
  */
-export function yearSummary(transactions, year, today) {
+export function yearSummary(transactions, year, today, currency = 'EUR') {
   const months = Array.from({ length: 12 }, (_, i) => ({ month: `${year}-${String(i + 1).padStart(2, '0')}`, cents: 0, count: 0 }));
   const prevYear = String(Number(year) - 1);
   const thisYear = today.slice(0, 4);
   const cutoff = year === thisYear ? today.slice(5) : null;
-  let previousCents = null;
+  // Vorjahresvergleich nur, wenn das Vorjahr ab Januar erfasst ist.
+  let previousCents = trackedBefore(transactions, `${prevYear}-01`) ? 0 : null;
   for (const t of transactions) {
-    if (!counts(t)) continue;
+    const v = counts(t) ? baseAmount(t, currency) : null;
+    if (v === null) continue;
     const y = t.date.slice(0, 4);
     if (y === year) {
       const m = months[Number(t.date.slice(5, 7)) - 1];
-      m.cents += t.amountCents;
+      m.cents += v;
       m.count += 1;
-    } else if (y === prevYear) {
-      previousCents ??= 0;
-      if (!cutoff || t.date.slice(5) <= cutoff) previousCents += t.amountCents;
+    } else if (y === prevYear && previousCents !== null) {
+      if (!cutoff || t.date.slice(5) <= cutoff) previousCents += v;
     }
   }
   const totalCents = months.reduce((s, m) => s + m.cents, 0);
@@ -481,8 +520,9 @@ export function yearSummary(transactions, year, today) {
  * @returns {{merchant: string, count: number, totalCents: number, yearCount: number, yearCents: number,
  *   averageCents: number, firstDate: string|null, lastDate: string|null}}
  */
-export function merchantSummary(transactions, merchant, today) {
-  const list = transactions.filter((t) => counts(t) && t.merchant === merchant);
+export function merchantSummary(transactions, merchant, today, currency = 'EUR') {
+  const list = transactions.filter((t) => counts(t) && t.merchant === merchant && baseAmount(t, currency) !== null)
+    .map((t) => ({ ...t, amountCents: baseAmount(t, currency) }));
   const year = today.slice(0, 4);
   const inYear = list.filter((t) => t.date.slice(0, 4) === year);
   const totalCents = list.reduce((s, t) => s + t.amountCents, 0);
@@ -501,12 +541,13 @@ export function merchantSummary(transactions, merchant, today) {
 
 /**
  * Rückblick auf einen Monat: Summe, Vergleich zum Vormonat, größte Kategorie, häufigster Händler, größte Zahlung.
- * @returns {null | {month: string, spentCents: number, count: number, previousCents: number,
+ * @returns {null | {month: string, spentCents: number, count: number, previousCents: number, previousComplete: boolean, categorizedShare: number,
  *   topCategory: {categoryId: string, cents: number}|null, topMerchant: {merchant: string, count: number, cents: number}|null,
  *   largest: {merchant: string, cents: number, date: string}}}
  */
-export function monthReview(transactions, month) {
-  const inMonth = transactions.filter((t) => counts(t) && monthOf(t.date) === month);
+export function monthReview(transactions, month, currency = 'EUR') {
+  const inMonth = transactions.filter((t) => counts(t) && monthOf(t.date) === month && baseAmount(t, currency) !== null)
+    .map((t) => ({ ...t, amountCents: baseAmount(t, currency) }));
   if (!inMonth.length) return null;
   const prev = previousMonth(month);
   const cat = new Map();
@@ -523,11 +564,16 @@ export function monthReview(transactions, month) {
   const [topMerchant] = [...mer.values()].filter((e) => e.merchant && e.count > 1)
     .sort((a, b) => b.count - a.count || b.cents - a.cents || order(a.merchant, b.merchant));
   const largest = [...inMonth].sort((a, b) => b.amountCents - a.amountCents || order(a.date, b.date))[0];
+  const positive = inMonth.reduce((s, t) => s + Math.max(0, t.amountCents), 0);
+  const sorted = inMonth.filter((t) => t.categoryId).reduce((s, t) => s + Math.max(0, t.amountCents), 0);
   return {
     month,
     spentCents: inMonth.reduce((s, t) => s + t.amountCents, 0),
     count: inMonth.length,
-    previousCents: transactions.filter((t) => counts(t) && monthOf(t.date) === prev).reduce((s, t) => s + t.amountCents, 0),
+    previousCents: transactions.filter((t) => counts(t) && monthOf(t.date) === prev)
+      .reduce((s, t) => s + (baseAmount(t, currency) ?? 0), 0),
+    previousComplete: trackedBefore(transactions, prev),
+    categorizedShare: positive > 0 ? sorted / positive : 0,
     topCategory: topCat ? { categoryId: topCat[0], cents: topCat[1] } : null,
     topMerchant: topMerchant || null,
     largest: { merchant: largest.merchant, cents: largest.amountCents, date: largest.date },

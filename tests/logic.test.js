@@ -25,7 +25,7 @@ test('parseDateTime: ISO und deutsch, ohne Zeitzonen-Umrechnung', () => {
 test('parseLog: Zeilen, Fehler, doppelte Zeilen, Semikolon im Händler', () => {
   const { transactions, errors, ignored } = L.parseLog(fx('log.txt'));
   assert.equal(transactions.length, 6);
-  assert.deepEqual(errors, [{ line: 5, error: 'fields' }]);
+  assert.deepEqual(errors, [{ line: 5, error: 'fields', text: 'kaputte zeile' }]);
   // Zeilen ohne Betrag (Bordkarten u. Ä.) sind kein Fehler, sie werden nur gezählt.
   assert.deepEqual(ignored, [6]);
   const rewe = transactions.filter((t) => t.merchant.startsWith('REWE'));
@@ -232,7 +232,9 @@ test('yearSummary: Monate, Durchschnitt nur über abgeschlossene Monate, Vorjahr
   assert.equal(y.months[8].cents, 20000);
   assert.equal(y.averageCents, 15000);
   assert.equal(y.maxCents, 20000);
-  assert.equal(y.previousCents, 7000);
+  assert.equal(y.previousCents, null); // 2025 erst ab Oktober erfasst: kein Vorjahresvergleich
+  const full = L.yearSummary([...list, tx('z', '2024-12-30', 100, 'X')], '2026', '2026-10-23');
+  assert.equal(full.previousCents, 7000);
   const last = L.yearSummary(list, '2025', '2026-10-23');
   assert.equal(last.averageCents, 5333); // Oktober bis Dezember, Dezember ohne Ausgaben
   assert.equal(last.previousCents, null);
@@ -252,6 +254,8 @@ test('monthReview: Summe, Vormonat, größte Kategorie, häufigster Händler, gr
   const r = L.monthReview(list, '2026-09');
   assert.equal(r.spentCents, 6200);
   assert.equal(r.previousCents, 3000);
+  assert.equal(r.previousComplete, false);
+  assert.equal(r.categorizedShare, 1);
   assert.deepEqual(r.topCategory, { categoryId: 'haushalt', cents: 4000 });
   assert.equal(r.topMerchant.merchant, 'REWE');
   assert.equal(r.largest.merchant, 'IKEA');
@@ -269,4 +273,53 @@ test('detectRecurring: monatlich gleich, nicht wöchentliche Einkäufe, nicht be
   const r = L.detectRecurring(list, '2026-10-23');
   assert.equal(r.length, 1);
   assert.deepEqual([r[0].merchant, r[0].monthlyCents, r[0].yearlyCents, r[0].since], ['Spotify P10', 1199, 14388, '2026-07']);
+});
+
+test('Fremdwährung: zählt erst mit Euro-Betrag, sonst nur als Hinweis', () => {
+  const list = [
+    tx('a', '2026-10-02', 1000, 'REWE'),
+    tx('b', '2026-10-02', 12000, 'Hotel', { currency: 'USD' }),
+    tx('c', '2026-10-03', 900, 'Diner', { currency: 'USD', baseCents: 830 }),
+  ];
+  const s = L.monthSummary(list, '2026-10', '2026-10-23', 5000, 'EUR');
+  assert.equal(s.spentCents, 1830);
+  assert.equal(s.count, 3);
+  assert.deepEqual(s.foreign, [{ currency: 'USD', cents: 12000, count: 1 }]);
+  assert.equal(s.topMerchants.find((m) => m.merchant === 'Diner').cents, 830);
+  const [g3, g2] = L.groupByDay(list, { month: '2026-10', currency: 'EUR' });
+  assert.equal(g3.totalCents, 830);
+  assert.equal(g2.totalCents, 1000);
+  assert.deepEqual(g2.foreign, [{ currency: 'USD', cents: 12000, count: 1 }]);
+  assert.equal(L.yearSummary(list, '2026', '2026-10-23').totalCents, 1830);
+  assert.equal(L.merchantSummary(list, 'Hotel', '2026-10-23').count, 0);
+  assert.equal(M.sanitizeTransaction({ ...list[2] }).baseCents, 830);
+  assert.equal(M.sanitizeTransaction({ ...list[0] }).baseCents, null);
+});
+
+test('Vergleiche nur mit vollständig erfassten Vormonaten', () => {
+  const list = [tx('a', '2026-09-20', 1000, 'X'), tx('b', '2026-10-05', 3000, 'X')];
+  assert.equal(L.monthSummary(list, '2026-10', '2026-10-23').previousComplete, false);
+  assert.equal(L.monthSummary([tx('z', '2026-08-31', 1, 'X'), ...list], '2026-10', '2026-10-23').previousComplete, true);
+});
+
+test('monthReview: Anteil eingeordnet', () => {
+  const list = [tx('a', '2026-09-01', 1000, 'A', { categoryId: 'essen' }), tx('b', '2026-09-02', 3000, 'B')];
+  assert.equal(L.monthReview(list, '2026-09').categorizedShare, 0.25);
+});
+
+test('ruleDefault: nur bei eindeutigem Händler mit mehreren Zahlungen vorab angehakt', () => {
+  const list = [
+    tx('a', '2026-10-01', 100, 'Bäckerei Krume'), tx('b', '2026-10-02', 100, 'Bäckerei Krume 2'),
+    tx('c', '2026-10-03', 100, 'Hotel Seeblick'), tx('d', '2026-10-04', 100, 'Bäckerei Schmidt'),
+  ];
+  assert.equal(L.ruleDefault(list, 'hotel'), false);
+  assert.equal(L.ruleDefault(list, 'bäckerei'), false);
+  assert.equal(L.ruleDefault(list.slice(0, 3), 'bäckerei'), true);
+  assert.equal(L.ruleDefault(list, ''), false);
+});
+
+test('Budget merkt sich, ab wann es gilt', () => {
+  assert.equal(M.sanitizeSettings({ monthlyBudgetCents: 50000, budgetSince: '2026-11' }).budgetSince, '2026-11');
+  assert.equal(M.sanitizeSettings({ monthlyBudgetCents: null, budgetSince: '2026-11' }).budgetSince, null);
+  assert.equal(M.sanitizeSettings({ monthlyBudgetCents: 50000, budgetSince: 'x' }).budgetSince, null);
 });

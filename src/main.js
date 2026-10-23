@@ -5,7 +5,7 @@ import {
 } from './model.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
-  sortTransactions, monthOf, findCrossDuplicates,
+  sortTransactions, monthOf, findCrossDuplicates, categoriesByUse, ruleDefault,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { pdfPages } from './pdf.js';
@@ -102,6 +102,7 @@ function updateBadge() {
 
 function selectTab(tab, { keepFrom = false } = {}) {
   if (!TABS[tab]) tab = 'overview';
+  if (tab !== view.tab) clearUndo();
   if (tab !== 'overview') view.importReport = '';
   view.tab = tab;
   if (!keepFrom) view.from = null;
@@ -129,6 +130,15 @@ function ask(text, okLabel = 'OK', { danger = false, cancel = true } = {}) {
 
 let toastTimer;
 let toastAction = null;
+
+/** „rückgängig“ gilt nur direkt nach der Aktion: Sobald sich etwas anderes ändert, verschwindet das Angebot,
+ *  sonst würde der Schnappschuss auch spätere Änderungen zurücknehmen. */
+function clearUndo() {
+  if (!toastAction) return;
+  clearTimeout(toastTimer);
+  $('#toast').hidden = true;
+  toastAction = null;
+}
 function toast(msg, action = null) {
   const t = $('#toast');
   $('#toast-text').textContent = msg;
@@ -296,6 +306,12 @@ function openEditor(id) {
   const f = $('#edit-form');
   f.merchant.value = t.merchant;
   f.amount.value = id ? ui.amountInput(t.amountCents) : '';
+  const cur = state.settings.currency;
+  const foreign = !!id && t.currency !== cur;
+  $('#edit-amount-cap').textContent = id ? `betrag (${t.currency.toLowerCase()})` : 'betrag';
+  $('#base-field').hidden = !foreign;
+  $('#base-cap').textContent = `abgerechnet in ${cur.toLowerCase()}`;
+  f.baseAmount.value = foreign && t.baseCents !== null ? ui.amountInput(t.baseCents) : '';
   f.card.value = t.card;
   f.date.value = t.date;
   f.time.value = t.time || '';
@@ -307,6 +323,7 @@ function openEditor(id) {
   ml.dataset.merchant = t.merchant;
   ml.textContent = `alle zahlungen bei ${t.merchant} ›`;
   f.rulePattern.value = suggestPattern(t.merchant);
+  f.makeRule.checked = ruleDefault(state.transactions, f.rulePattern.value);
   $('#rule-offer').hidden = true;
   $('#edit-error').hidden = true;
   $('#edit-delete').hidden = !id;
@@ -334,6 +351,17 @@ async function saveEditor() {
     $('#edit-error').hidden = false;
     return false;
   }
+  const currency = amount.currency || t.currency || state.settings.currency;
+  let baseCents = null;
+  if (currency !== state.settings.currency && f.baseAmount.value.trim()) {
+    const b = parseAmount(f.baseAmount.value);
+    if (!b) {
+      $('#edit-error').textContent = `Den Betrag in ${state.settings.currency} bitte als Zahl angeben, z. B. 112,40.`;
+      $('#edit-error').hidden = false;
+      return false;
+    }
+    baseCents = b.cents;
+  }
   const snap = snapshot();
   const cat = f.categoryId.value || null;
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -341,7 +369,7 @@ async function saveEditor() {
   let manualCategory = t.manualCategory || (cat !== t.categoryId);
   if (!t.id && !cat) { categoryId = categorize(f.merchant.value, state.rules); manualCategory = false; }
   const next = sanitizeTransaction({
-    ...t, id, merchant: f.merchant.value, amountCents: amount.cents, currency: amount.currency || t.currency || state.settings.currency,
+    ...t, id, merchant: f.merchant.value, amountCents: amount.cents, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
   });
@@ -381,11 +409,12 @@ async function deleteEditing() {
 }
 
 // ---------- Einordnen ----------
-const sorter = { total: 0, skipped: new Set(), last: null };
+const sorter = { total: 0, skipped: new Set(), last: null, cats: [] };
 
+/** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol). */
 function sortQueue() {
   return sortTransactions(state.transactions)
-    .filter((t) => !t.categoryId && !t.excluded && monthOf(t.date) === view.month && !sorter.skipped.has(t.id));
+    .filter((t) => !t.categoryId && !t.excluded && !sorter.skipped.has(t.id));
 }
 
 function renderSorter() {
@@ -393,13 +422,15 @@ function renderSorter() {
   const t = q[0] || null;
   ui.renderSorter($('#sort-body'), state, {
     t, pos: Math.min(sorter.total, Math.max(1, sorter.total - q.length + 1)), total: sorter.total,
-    pattern: t ? suggestPattern(t.merchant) : '', last: sorter.last,
+    pattern: t ? suggestPattern(t.merchant) : '', cats: sorter.cats, last: sorter.last,
   }, clock());
 }
 
 function openSorter() {
+  clearUndo();
   sorter.skipped = new Set();
   sorter.last = null;
+  sorter.cats = categoriesByUse(state.transactions);
   sorter.total = sortQueue().length;
   renderSorter();
   openSheet($('#sort-dialog'));
@@ -489,7 +520,7 @@ async function restoreDefaultRules() {
 }
 
 // ---------- Sheets: Hintergrund tippen oder nach unten wischen schließt ----------
-function openSheet(d) { d.style.transform = ''; d.returnValue = ''; d.showModal(); }
+function openSheet(d) { clearUndo(); d.style.transform = ''; d.returnValue = ''; d.showModal(); }
 function closeSheet(d, value = 'cancel') { if (d.open) d.close(value); }
 
 function bindSheet(d) {
@@ -534,7 +565,7 @@ function bind() {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
-    if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; render(); if (b.closest('.review')) window.scrollTo(0, 0); }
+    if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; view.importReport = ''; render(); if (b.closest('.review')) window.scrollTo(0, 0); }
     if (act === 'goto') selectTab(b.dataset.tab);
     if (act === 'back') {
       if (b.dataset.tab === 'overview') { view.listCategory = undefined; view.listMerchant = null; }
@@ -635,7 +666,8 @@ function bind() {
       const snap = snapshot();
       const v = e.target.budget.value.trim();
       const a = v ? parseAmount(v) : null;
-      state.settings = sanitizeSettings({ ...state.settings, monthlyBudgetCents: a ? a.cents : null });
+      const since = state.settings.monthlyBudgetCents && state.settings.budgetSince ? state.settings.budgetSince : clock().month;
+      state.settings = sanitizeSettings({ ...state.settings, monthlyBudgetCents: a ? a.cents : null, budgetSince: since });
       await db.setMeta('settings', state.settings);
       render();
       undoable(state.settings.monthlyBudgetCents ? 'Budget gespeichert' : 'Budget entfernt', snap);
