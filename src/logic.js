@@ -354,6 +354,34 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
 }
 
 /**
+ * Verlauf eines Monats: aufgelaufene Ausgaben Tag für Tag, dazu der Vormonat zum Vergleich.
+ * `current` reicht im laufenden Monat nur bis heute, in künftigen Monaten ist es leer.
+ * `previous` ist null, wenn der Vormonat nicht vollständig erfasst ist (sonst irreführend).
+ * @returns {{days: number, current: number[], previous: number[]|null, previousDays: number}}
+ */
+export function monthCurve(transactions, month, today, currency = 'EUR') {
+  const cumulate = (m, upTo) => {
+    const perDay = new Array(daysInMonth(m)).fill(0);
+    for (const t of transactions) {
+      if (!counts(t) || monthOf(t.date) !== m) continue;
+      const c = baseAmount(t, currency);
+      if (c !== null) perDay[Number(t.date.slice(8, 10)) - 1] += c;
+    }
+    let sum = 0;
+    return perDay.slice(0, upTo).map((c) => (sum += c));
+  };
+  const days = daysInMonth(month);
+  const elapsed = monthOf(today) === month ? Number(today.slice(8, 10)) : today < month ? 0 : days;
+  const prev = previousMonth(month);
+  return {
+    days,
+    current: cumulate(month, elapsed),
+    previous: trackedBefore(transactions, prev) ? cumulate(prev, daysInMonth(prev)) : null,
+    previousDays: daysInMonth(prev),
+  };
+}
+
+/**
  * Vorschlag für ein Regelmuster aus einem Händlernamen: erstes Wort mit mindestens drei Buchstaben,
  * ohne Filialnummern ("REWE Markt GmbH 1234" → "rewe", "DM-Drogerie Markt" → "dm-drogerie").
  */
