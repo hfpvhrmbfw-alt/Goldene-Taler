@@ -215,6 +215,9 @@ export function sortTransactions(transactions) {
     || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
+/** Zählt eine Buchung in Summen mit? Von Hand ausgenommene (z. B. für andere ausgelegt) nicht. */
+export const counts = (t) => !t.excluded;
+
 /** "2026-10-20" → "2026-10" */
 export const monthOf = (date) => date.slice(0, 7);
 
@@ -266,10 +269,10 @@ export function daysInMonth(month) {
  * @returns {MonthSummary}
  */
 export function monthSummary(transactions, month, today, budgetCents = null, currency = 'EUR') {
-  const inMonth = transactions.filter((t) => monthOf(t.date) === month);
+  const inMonth = transactions.filter((t) => counts(t) && monthOf(t.date) === month);
   const prev = previousMonth(month);
   const spentCents = inMonth.reduce((s, t) => s + t.amountCents, 0);
-  const inPrev = transactions.filter((t) => monthOf(t.date) === prev);
+  const inPrev = transactions.filter((t) => counts(t) && monthOf(t.date) === prev);
   const previousCents = inPrev.reduce((s, t) => s + t.amountCents, 0);
   const comparedToDay = monthOf(today) === month ? Number(today.slice(8, 10)) : null;
   const previousToDateCents = comparedToDay === null ? previousCents
@@ -343,7 +346,7 @@ export function suggestPattern(merchant) {
  * @param {import('./model.js').Transaction[]} transactions
  * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null}} filter
  *   categoryId: undefined = alle, null = ohne Kategorie
- * @returns {{date: string, totalCents: number, items: import('./model.js').Transaction[]}[]}
+ * @returns {{date: string, totalCents: number, items: import('./model.js').Transaction[]}[]}  totalCents ohne ausgenommene
  */
 export function groupByDay(transactions, filter = {}) {
   const q = (filter.query || '').trim().toLowerCase();
@@ -357,7 +360,7 @@ export function groupByDay(transactions, filter = {}) {
     let g = groups[groups.length - 1];
     if (!g || g.date !== t.date) { g = { date: t.date, totalCents: 0, items: [] }; groups.push(g); }
     g.items.push(t);
-    g.totalCents += t.amountCents;
+    if (counts(t)) g.totalCents += t.amountCents;
   }
   return groups;
 }
@@ -399,4 +402,178 @@ export function editRule(rules, id, pattern, categoryId) {
 export function daysBetween(a, b) {
   const utc = (d) => Date.UTC(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10)));
   return Math.round((utc(b) - utc(a)) / 86400000);
+}
+
+/**
+ * Dieselbe Kartenzahlung kann zweimal ankommen: per Kurzbefehl (Apple Pay) und später im Kontoauszug.
+ * Gleich heißt: gleicher Betrag, und der Auszug nennt sie höchstens einen Tag früher oder fünf Tage später
+ * (Banken buchen oft verzögert). Verglichen wird nur Kurzbefehl mit Auszug, jede vorhandene Buchung deckt
+ * höchstens eine neue ab, und bei mehreren Kandidaten gewinnt das nächste Datum.
+ * @param {import('./model.js').Transaction[]} existing
+ * @param {import('./model.js').Transaction[]} incoming  neue Buchungen, deren ID noch unbekannt ist
+ * @returns {Set<string>} IDs aus incoming, die schon erfasst sind
+ */
+export function findCrossDuplicates(existing, incoming) {
+  const other = { statement: 'shortcut', shortcut: 'statement' };
+  const taken = new Set();
+  const dupes = new Set();
+  for (const t of incoming) {
+    const want = other[t.source];
+    if (!want) continue;
+    let best = null;
+    let bestDist = Infinity;
+    for (const e of existing) {
+      if (e.source !== want || taken.has(e.id) || e.amountCents !== t.amountCents || e.currency !== t.currency) continue;
+      const shortcutDate = want === 'shortcut' ? e.date : t.date;
+      const statementDate = want === 'shortcut' ? t.date : e.date;
+      const d = daysBetween(shortcutDate, statementDate);
+      if (d < -1 || d > 5) continue;
+      if (Math.abs(d) < bestDist) { bestDist = Math.abs(d); best = e; }
+    }
+    if (best) { taken.add(best.id); dupes.add(t.id); }
+  }
+  return dupes;
+}
+
+/**
+ * Ein Kalenderjahr in zwölf Monaten, für den Jahresblick.
+ * Der Durchschnitt zählt nur abgeschlossene Monate ab dem ersten mit Daten; der Vorjahresvergleich
+ * reicht im laufenden Jahr nur bis zum heutigen Tag.
+ * @param {import('./model.js').Transaction[]} transactions
+ * @param {string} year   YYYY
+ * @param {string} today  YYYY-MM-DD
+ * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number,
+ *   averageCents: number|null, maxCents: number, previousCents: number|null, comparedTo: string|null}}
+ */
+export function yearSummary(transactions, year, today) {
+  const months = Array.from({ length: 12 }, (_, i) => ({ month: `${year}-${String(i + 1).padStart(2, '0')}`, cents: 0, count: 0 }));
+  const prevYear = String(Number(year) - 1);
+  const thisYear = today.slice(0, 4);
+  const cutoff = year === thisYear ? today.slice(5) : null;
+  let previousCents = null;
+  for (const t of transactions) {
+    if (!counts(t)) continue;
+    const y = t.date.slice(0, 4);
+    if (y === year) {
+      const m = months[Number(t.date.slice(5, 7)) - 1];
+      m.cents += t.amountCents;
+      m.count += 1;
+    } else if (y === prevYear) {
+      previousCents ??= 0;
+      if (!cutoff || t.date.slice(5) <= cutoff) previousCents += t.amountCents;
+    }
+  }
+  const totalCents = months.reduce((s, m) => s + m.cents, 0);
+  const first = months.findIndex((m) => m.count > 0);
+  const lastDone = year < thisYear ? 11 : year === thisYear ? Number(today.slice(5, 7)) - 2 : -1;
+  const done = first >= 0 && lastDone >= first ? months.slice(first, lastDone + 1) : [];
+  return {
+    year, months, totalCents,
+    averageCents: done.length ? Math.round(done.reduce((s, m) => s + m.cents, 0) / done.length) : null,
+    maxCents: Math.max(0, ...months.map((m) => m.cents)),
+    previousCents,
+    comparedTo: cutoff,
+  };
+}
+
+/**
+ * Alles zu einem Händler (genauer Name): Summen für das Jahr von `today` und insgesamt.
+ * @returns {{merchant: string, count: number, totalCents: number, yearCount: number, yearCents: number,
+ *   averageCents: number, firstDate: string|null, lastDate: string|null}}
+ */
+export function merchantSummary(transactions, merchant, today) {
+  const list = transactions.filter((t) => counts(t) && t.merchant === merchant);
+  const year = today.slice(0, 4);
+  const inYear = list.filter((t) => t.date.slice(0, 4) === year);
+  const totalCents = list.reduce((s, t) => s + t.amountCents, 0);
+  const dates = list.map((t) => t.date).sort();
+  return {
+    merchant,
+    count: list.length,
+    totalCents,
+    yearCount: inYear.length,
+    yearCents: inYear.reduce((s, t) => s + t.amountCents, 0),
+    averageCents: list.length ? Math.round(totalCents / list.length) : 0,
+    firstDate: dates[0] || null,
+    lastDate: dates[dates.length - 1] || null,
+  };
+}
+
+/**
+ * Rückblick auf einen Monat: Summe, Vergleich zum Vormonat, größte Kategorie, häufigster Händler, größte Zahlung.
+ * @returns {null | {month: string, spentCents: number, count: number, previousCents: number,
+ *   topCategory: {categoryId: string, cents: number}|null, topMerchant: {merchant: string, count: number, cents: number}|null,
+ *   largest: {merchant: string, cents: number, date: string}}}
+ */
+export function monthReview(transactions, month) {
+  const inMonth = transactions.filter((t) => counts(t) && monthOf(t.date) === month);
+  if (!inMonth.length) return null;
+  const prev = previousMonth(month);
+  const cat = new Map();
+  const mer = new Map();
+  for (const t of inMonth) {
+    if (t.categoryId) cat.set(t.categoryId, (cat.get(t.categoryId) || 0) + t.amountCents);
+    const e = mer.get(t.merchant) || { merchant: t.merchant, count: 0, cents: 0 };
+    e.count += 1;
+    e.cents += t.amountCents;
+    mer.set(t.merchant, e);
+  }
+  const order = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const [topCat] = [...cat].sort((a, b) => b[1] - a[1] || CATEGORY_IDS.indexOf(a[0]) - CATEGORY_IDS.indexOf(b[0]));
+  const [topMerchant] = [...mer.values()].filter((e) => e.merchant && e.count > 1)
+    .sort((a, b) => b.count - a.count || b.cents - a.cents || order(a.merchant, b.merchant));
+  const largest = [...inMonth].sort((a, b) => b.amountCents - a.amountCents || order(a.date, b.date))[0];
+  return {
+    month,
+    spentCents: inMonth.reduce((s, t) => s + t.amountCents, 0),
+    count: inMonth.length,
+    previousCents: transactions.filter((t) => counts(t) && monthOf(t.date) === prev).reduce((s, t) => s + t.amountCents, 0),
+    topCategory: topCat ? { categoryId: topCat[0], cents: topCat[1] } : null,
+    topMerchant: topMerchant || null,
+    largest: { merchant: largest.merchant, cents: largest.amountCents, date: largest.date },
+  };
+}
+
+/** Händlername ohne Ziffern (Filial- und Vorgangsnummern), für das Erkennen wiederkehrender Zahlungen. */
+const recurringKey = (merchant) => normalizeMerchant(merchant).replace(/[\d#*]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * Erkennt Abos und andere monatlich wiederkehrende Zahlungen: derselbe Händler in mindestens drei
+ * aufeinanderfolgenden Monaten, höchstens eine Zahlung pro Monat, die letzten drei Beträge fast gleich
+ * (±10 %, mindestens ±1 €). Nur noch laufende (letzte Zahlung höchstens 45 Tage her).
+ * @returns {{merchant: string, categoryId: string|null, currency: string, monthlyCents: number, yearlyCents: number, since: string, lastDate: string}[]}
+ *   teuerste zuerst
+ */
+export function detectRecurring(transactions, today) {
+  const groups = new Map();
+  for (const t of sortTransactions(transactions).reverse()) {
+    if (!counts(t) || t.amountCents <= 0) continue;
+    const k = recurringKey(t.merchant);
+    if (!k) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  const found = [];
+  for (const list of groups.values()) {
+    const last = list[list.length - 1];
+    if (daysBetween(last.date, today) > 45) continue;
+    // Von hinten: Monate mit genau einer Zahlung, lückenlos, ähnlicher Betrag.
+    const byMonth = new Map();
+    for (const t of list) byMonth.set(monthOf(t.date), [...(byMonth.get(monthOf(t.date)) || []), t]);
+    const similar = (a, b) => Math.abs(a - b) <= Math.max(100, Math.round(b * 0.1));
+    let month = monthOf(last.date);
+    let run = 0;
+    let since = month;
+    while (byMonth.get(month)?.length === 1 && (run < 3 ? similar(byMonth.get(month)[0].amountCents, last.amountCents) : true)) {
+      since = month;
+      run += 1;
+      month = previousMonth(month);
+    }
+    if (run < 3) continue;
+    found.push({
+      merchant: last.merchant, categoryId: last.categoryId, currency: last.currency,
+      monthlyCents: last.amountCents, yearlyCents: last.amountCents * 12, since, lastDate: last.date,
+    });
+  }
+  return found.sort((a, b) => b.monthlyCents - a.monthlyCents || (a.merchant < b.merchant ? -1 : 1));
 }

@@ -28,5 +28,13 @@ export const IMPORT_ERRORS = {
   shape: 'Die Sicherung ist unvollständig.',
 };
 
+export const BANK_LABELS = { traderepublic: 'Trade Republic', ing: 'ING' };
+
+export const STATEMENT_ERRORS = {
+  pdf: 'Das PDF ließ sich nicht lesen. Ist es vielleicht mit einem Passwort geschützt?',
+  unknown: 'Diesen Kontoauszug kennt Taler noch nicht. Bisher gehen Trade Republic und ING (Girokonto).',
+  empty: 'In diesem Kontoauszug stehen keine Buchungen.',
+};
+
 export const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
 export const WEEKDAYS = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];

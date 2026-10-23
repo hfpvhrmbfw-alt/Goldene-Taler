@@ -1,8 +1,11 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
 import { CATEGORY_IDS } from './model.js';
-import { monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween } from './logic.js';
+import {
+  monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween,
+  yearSummary, merchantSummary, monthReview, detectRecurring,
+} from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS } from './texts.js';
+import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -57,6 +60,8 @@ export function sinceLabel(date, today) {
   return `vor ${n} tagen`;
 }
 const pct = (x) => `${Math.round(x * 100)} %`;
+/** Veränderung in Prozent mit Vorzeichen, null ohne Vergleichswert. */
+const change = (now, before) => (before > 0 ? `${now >= before ? '+' : '−'}${Math.round(Math.abs(now - before) / before * 100)} %` : null);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 export function categoryOptions(selected, { withNone = true } = {}) {
@@ -84,6 +89,11 @@ function importRow(info, today) {
   if (last?.at) sub = `zuletzt ${sinceLabel(last.at, today)}${last.time && last.at === today ? `, ${last.time}` : ''} · ${last.added} neu`;
   else if (last?.when) sub = `zuletzt ${String(last.when).toLowerCase()} · ${last.added} neu`;
   return `<li><label class="item action" for="log-file"><span class="t"><b>Neue Zahlungen einlesen</b><span>${esc(sub)}</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
+}
+
+/** Zeile „kontoauszug einlesen“: öffnet den Dateiwähler für ein PDF von Trade Republic oder ING. */
+function statementRow() {
+  return `<li><label class="item action" for="statement-file"><span class="t"><b>Kontoauszug einlesen</b><span>PDF von Trade Republic oder ING · bleibt auf dem Gerät</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
 }
 
 /** Sicherung fällig? Ab 20 eigenen Buchungen und wenn die letzte Sicherung über 30 Tage her ist. */
@@ -118,6 +128,7 @@ export function renderOverview(el, state, view, clock, info) {
     <div class="emptyhero">${coin('big')}<p>Noch keine Buchungen.<br>Richte einmal den Kurzbefehl ein, danach kommt jede Apple-Pay-Zahlung von selbst in die Datei <code>ausgaben.txt</code>.</p></div>
     <ul class="list">
       ${importRow(info, clock.today)}
+      ${statementRow()}
       ${item({ tag: 'button', attrs: 'data-act="setup"', title: 'Kurzbefehl einrichten', sub: 'einmalig, etwa drei Minuten', chev: true })}
       ${item({ tag: 'button', attrs: 'data-act="demo"', title: 'Mit Beispieldaten ausprobieren', sub: 'lassen sich danach mit einem Tipp entfernen', chev: true })}
     </ul>
@@ -160,6 +171,7 @@ export function renderOverview(el, state, view, clock, info) {
     html += item({ tag: 'button', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, chev: true });
   }
   html += `</ul>${view.importReport || ''}`;
+  if (view.month === clock.month) html += reviewCard(state, clock, info);
 
   const cats = s.byCategory.filter((c) => c.categoryId !== null);
   html += `${head('kategorien')}<ul class="list">`;
@@ -176,9 +188,73 @@ export function renderOverview(el, state, view, clock, info) {
 
   if (s.topMerchants.length) {
     html += `${head('häufigste händler')}<ul class="list">
-      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: money(m.cents, cur) })).join('')}</ul>`;
+      ${s.topMerchants.map((m) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(m.merchant)}"`, title: esc(m.merchant || '—'), sub: `${m.count}×`, n: money(m.cents, cur), chev: true })).join('')}</ul>`;
   }
+  html += yearBlock(state, view, clock, months);
+  if (view.month === clock.month) html += recurringBlock(state, clock);
   el.innerHTML = html;
+}
+
+const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+
+/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. */
+function yearBlock(state, view, clock, months) {
+  const cur = state.settings.currency;
+  const year = view.month.slice(0, 4);
+  const y = yearSummary(state.transactions, year, clock.today);
+  if (!y.months.some((m) => m.count)) return '';
+  const bars = y.months.map((m, i) => {
+    const h = y.maxCents > 0 ? Math.max(0, m.cents) / y.maxCents : 0;
+    const can = months.includes(m.month);
+    const label = `${MONTHS[i]}: ${m.count ? money(m.cents, cur) : 'keine Zahlungen'}`;
+    return `<button class="ybar${m.month === view.month ? ' on' : ''}${m.month > clock.month ? ' future' : ''}" data-act="month" data-month="${can ? m.month : ''}" ${can ? '' : 'disabled'} aria-label="${esc(label)}"${m.month === view.month ? ' aria-current="true"' : ''}>`
+      + `<span class="col"><i style="height:${(h * 100).toFixed(1)}%"></i></span><span class="lbl" aria-hidden="true">${MONTH_INITIALS[i]}</span></button>`;
+  }).join('');
+  const notes = [];
+  if (y.averageCents !== null) notes.push(`ø ${money(y.averageCents, cur)} pro monat`);
+  const ch = y.previousCents !== null ? change(y.totalCents, y.previousCents) : null;
+  if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
+  return `${head(`jahr ${year}`)}
+  <div class="year">
+    <div class="yearhead"><span class="v">${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
+    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}">${bars}</div>
+  </div>`;
+}
+
+/** Wiederkehrende Zahlungen (Abos), nur im laufenden Monat. */
+function recurringBlock(state, clock) {
+  const cur = state.settings.currency;
+  const list = detectRecurring(state.transactions, clock.today).filter((r) => r.currency === cur);
+  if (!list.length) return '';
+  const monthly = list.reduce((a, r) => a + r.monthlyCents, 0);
+  return `${head('jeden monat')}<ul class="list">
+    ${list.map((r) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr`, n: money(r.monthlyCents, cur), chev: true })).join('')}
+  </ul>
+  <p class="barnote">Zusammen ${money(monthly, cur)} im Monat, ${money(monthly * 12, cur)} im Jahr. Erkannt an gleichen Beträgen in mindestens drei Monaten hintereinander.</p>`;
+}
+
+/** Rückblick auf den Vormonat, in den ersten zehn Tagen eines Monats, bis er weggetippt wird. */
+function reviewCard(state, clock, info) {
+  const prev = previousMonth(clock.month);
+  if (Number(clock.today.slice(8, 10)) > 10 || info.reviewDismissed === prev) return '';
+  const r = monthReview(state.transactions, prev);
+  if (!r) return '';
+  const cur = state.settings.currency;
+  const b = state.settings.monthlyBudgetCents;
+  const ch = change(r.spentCents, r.previousCents);
+  const lines = [];
+  if (ch) lines.push(`${ch} zum ${monthName(previousMonth(prev))}`);
+  if (b) lines.push(r.spentCents <= b ? `${money(b - r.spentCents, cur)} unter dem Budget` : `${money(r.spentCents - b, cur)} über dem Budget`);
+  if (r.topCategory) lines.push(`am meisten für ${esc(catLabel(r.topCategory.categoryId))}: ${money(r.topCategory.cents, cur)}`);
+  if (r.topMerchant) lines.push(`am häufigsten bei ${esc(r.topMerchant.merchant)}: ${r.topMerchant.count}×`);
+  if (r.largest.cents > 0) lines.push(`größte Zahlung: ${money(r.largest.cents, cur)} bei ${esc(r.largest.merchant || '—')}`);
+  return `<section class="review" aria-label="Rückblick ${esc(monthLabel(prev))}">
+    <div class="reviewhead"><span class="cap">rückblick ${esc(monthName(prev).toLowerCase())}</span><button class="iconbtn" data-act="review-dismiss" data-month="${prev}" aria-label="Rückblick schließen">${ICON.close}</button></div>
+    <div class="v">${moneyHero(r.spentCents, cur)}</div>
+    <p class="sub">${plural(r.count, 'Zahlung', 'Zahlungen')}</p>
+    <ul>${lines.map((l) => `<li>${l}</li>`).join('')}</ul>
+    <button class="textbtn" data-act="month" data-month="${prev}">${esc(monthName(prev).toLowerCase())} ansehen ›</button>
+  </section>`;
 }
 
 const standaloneNote = () => `<div class="note info"><span class="cap">tipp</span>Öffne Taler über <b>Teilen › Zum Home-Bildschirm</b>. Safari und die App auf dem Home-Bildschirm speichern getrennt.</div>`;
@@ -195,13 +271,14 @@ export function renderList(el, state, view, clock) {
 
   let html = `
   <div class="titlerow">
-    <h2 class="bigtitle">${m ? esc(monthLabel(m)) : 'alle buchungen'}</h2>
+    <h2 class="bigtitle">${view.listMerchant ? esc(view.listMerchant) : m ? esc(monthLabel(m)) : 'alle buchungen'}</h2>
     ${m ? `<div class="pager">
       <button class="iconbtn" data-act="list-month" data-month="${months[idx + 1] || ''}" ${months[idx + 1] ? '' : 'disabled'} aria-label="Vorheriger Monat">${ICON.prev}</button>
       <button class="iconbtn" data-act="list-month" data-month="${months[idx - 1] || ''}" ${idx > 0 ? '' : 'disabled'} aria-label="Nächster Monat">${ICON.next}</button>
     </div>` : ''}
   </div>
-  <p class="meta-line">${plural(count, 'Buchung', 'Buchungen')} · ${money(total, cur)}</p>
+  <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${money(total, cur)}</p>
+  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) : ''}
   <label class="search">${ICON.search}<input type="search" id="f-query" value="${esc(view.query)}" placeholder="suchen" aria-label="Händler oder Notiz suchen"></label>
   <div class="seg" role="group" aria-label="Zeitraum">
     <button data-act="list-scope" data-scope="month" aria-pressed="${!!m}">ein monat</button>
@@ -210,7 +287,7 @@ export function renderList(el, state, view, clock) {
   const chips = [];
   const x = ICON.close.replace('<svg', '<svg width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"');
   if (view.listCategory !== undefined) chips.push(`<button class="chip" data-act="clear-cat" aria-label="Filter ${esc(catLabel(view.listCategory))} entfernen">${esc(catLabel(view.listCategory))} ${x}</button>`);
-  if (view.listMerchant) chips.push(`<button class="chip" data-act="clear-merchant" aria-label="Filter ${esc(view.listMerchant)} entfernen">${esc(view.listMerchant)} ${x}</button>`);
+  if (view.listMerchant) chips.push(`<button class="chip" data-act="clear-merchant" aria-label="Filter ${esc(view.listMerchant)} entfernen">nur ${esc(view.listMerchant)} ${x}</button>`);
   if (chips.length) html += `<div class="chips">${chips.join('')}</div>`;
 
   if (!groups.length) html += `<p class="empty">Keine Buchungen für diese Auswahl.</p>`;
@@ -218,10 +295,10 @@ export function renderList(el, state, view, clock) {
   for (const g of groups) {
     html += `<li class="cap day" role="heading" aria-level="3"><span>${esc(dayLabel(g.date, clock.today, clock.yesterday))}</span><span class="num">${money(g.totalCents, cur)}</span></li>`;
     for (const t of g.items) {
-      const sub = [catLabel(t.categoryId), t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : ''].filter(Boolean).map(esc).join(' · ');
+      const sub = [t.excluded ? 'zählt nicht mit' : '', catLabel(t.categoryId), t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : ''].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
-        tag: 'button', cls: `${t.categoryId ? '' : 'open'}${fresh ? ' fresh' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
+        tag: 'button', cls: `${t.categoryId || t.excluded ? '' : 'open'}${fresh ? ' fresh' : ''}${t.excluded ? ' excluded' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
         title: esc(t.merchant || 'Ohne Händler'), sub,
         n: `${t.amountCents < 0 ? '+' : ''}${money(Math.abs(t.amountCents), t.currency)}`, nCls: t.amountCents < 0 ? 'in' : '',
       });
@@ -229,6 +306,17 @@ export function renderList(el, state, view, clock) {
   }
   html += `</ul>`;
   el.innerHTML = html;
+}
+
+/** Kopf der Händler-Ansicht: dieses Jahr und insgesamt. */
+function merchantKpis(state, merchant, clock) {
+  const cur = state.settings.currency;
+  const s = merchantSummary(state.transactions, merchant, clock.today);
+  if (!s.count) return '';
+  return `<div class="kpis">
+    <div class="kpi"><div class="cap">${clock.today.slice(0, 4)}</div><div class="v">${money(s.yearCents, cur)}</div><div class="sub">${plural(s.yearCount, 'Zahlung', 'Zahlungen')}</div></div>
+    <div class="kpi"><div class="cap">insgesamt</div><div class="v">${money(s.totalCents, cur)}</div><div class="sub">ø ${money(s.averageCents, cur)} · seit ${esc(monthLabel(s.firstDate).toLowerCase())}</div></div>
+  </div>`;
 }
 
 /** Einstellungen: Budget, Regeln, Kurzbefehl, Sicherung, Zurücksetzen. */
@@ -271,6 +359,12 @@ export function renderSettings(el, state, view, info, clock) {
   <details><summary>zeilen einfügen</summary><div class="stack">
     <label class="field"><span class="cap">zeilen</span><textarea id="log-text" placeholder="2026-10-20T18:55:41+02:00;REWE Markt;;42,17 € mit Visa"></textarea></label>
     <button class="btn" data-act="import-text">einlesen</button></div></details>
+
+  ${head('kontoauszug')}
+  <ul class="list">${statementRow()}</ul>
+  <p class="muted">Übernimmt Kartenzahlungen und Lastschriften, keine Überweisungen, Daueraufträge oder Wertpapiere.
+    Was der Kurzbefehl schon per Apple Pay erfasst hat (gleicher Betrag, Datum bis fünf Tage später), kommt nicht doppelt.
+    Das PDF wird nur hier im Browser gelesen und nicht gespeichert.</p>
 
   ${head('sicherung')}
   <ul class="list">
@@ -340,8 +434,8 @@ export function renderSorter(el, state, s, clock) {
 }
 
 /** Bericht nach dem Einlesen der Kurzbefehl-Datei. Zeilen ohne Betrag sind kein Fehler und erscheinen nur grau. */
-export function importReportHtml(added, known, errors, ignoredNew) {
-  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${added ? 'eingelesen' : 'nichts neues'}</span>${added} neu, ${known} schon bekannt.</div>`;
+export function importReportHtml(added, known, errors, ignoredNew, dupes = 0) {
+  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${added ? 'eingelesen' : 'nichts neues'}</span>${added} neu, ${known} schon bekannt${dupes ? `, ${dupes} schon aus dem Kontoauszug` : ''}.</div>`;
   if (errors.length) {
     html += `<div class="note warn"><span class="cap">übersprungen</span>${plural(errors.length, 'Zeile', 'Zeilen')} nicht lesbar: `
       + errors.slice(0, 5).map((e) => `Zeile ${e.line} (${esc(LOG_ERRORS[e.error] || e.error)})`).join(', ')
@@ -351,12 +445,22 @@ export function importReportHtml(added, known, errors, ignoredNew) {
   return html;
 }
 
+/** Ergebnis eines Kontoauszugs: neu, bekannt, schon per Kurzbefehl da, nicht übernommen. */
+export function statementReportHtml(bank, added, known, dupes, other, errors) {
+  const parts = [`${added} neu`, `${known} schon bekannt`];
+  if (dupes) parts.push(`${dupes} schon per Apple Pay erfasst`);
+  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${esc(BANK_LABELS[bank] || bank)}</span>${parts.join(', ')}.</div>`;
+  if (errors) html += `<div class="note warn"><span class="cap">übersprungen</span>${plural(errors, 'Zeile', 'Zeilen')} nicht lesbar.</div>`;
+  if (other) html += `<p class="barnote">${plural(other, 'Buchung', 'Buchungen')} ohne Karte oder Lastschrift (Überweisungen, Gutschriften, Wertpapiere) nicht übernommen.</p>`;
+  return html;
+}
+
 /** CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. */
 export function buildCsv(transactions) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz'].map(q).join(';')];
+  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt'].map(q).join(';')];
   for (const t of transactions) {
-    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note].map(q).join(';'));
+    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja'].map(q).join(';'));
   }
   return '﻿' + lines.join('\r\n');
 }

@@ -10,8 +10,8 @@ export const CATEGORY_IDS = [
   'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'sonstiges',
 ];
 
-/** demo = Beispieldaten, lassen sich getrennt entfernen. */
-export const SOURCES = ['shortcut', 'manual', 'demo'];
+/** demo = Beispieldaten, lassen sich getrennt entfernen. statement = aus einem Kontoauszug (PDF). */
+export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
 
 /**
  * @typedef {Object} Transaction
@@ -25,7 +25,8 @@ export const SOURCES = ['shortcut', 'manual', 'demo'];
  * @property {string|null} categoryId
  * @property {boolean} manualCategory  true = von Hand gesetzt, Regeln überschreiben nicht
  * @property {string} note
- * @property {'shortcut'|'manual'|'demo'} source
+ * @property {'shortcut'|'manual'|'demo'|'statement'} source
+ * @property {boolean} excluded     true = zählt in keiner Summe mit (z. B. für andere ausgelegt)
  */
 
 /**
@@ -50,7 +51,7 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 export function emptyTransaction(id, date) {
   return {
     id, date, time: null, amountCents: 0, currency: 'EUR', merchant: '', card: '',
-    categoryId: null, manualCategory: false, note: '', source: 'manual',
+    categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false,
   };
 }
 
@@ -76,6 +77,7 @@ export function sanitizeTransaction(raw) {
     manualCategory: categoryId !== null && raw.manualCategory === true,
     note: str(raw.note, 500),
     source: SOURCES.includes(raw.source) ? raw.source : 'manual',
+    excluded: raw.excluded === true,
   };
 }
 
