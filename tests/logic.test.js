@@ -323,3 +323,24 @@ test('Budget merkt sich, ab wann es gilt', () => {
   assert.equal(M.sanitizeSettings({ monthlyBudgetCents: null, budgetSince: '2026-11' }).budgetSince, null);
   assert.equal(M.sanitizeSettings({ monthlyBudgetCents: 50000, budgetSince: 'x' }).budgetSince, null);
 });
+
+test('monthCurve', () => {
+  const tx = (id, date, cents, extra = {}) => ({ ...M.emptyTransaction(id, date), amountCents: cents, ...extra });
+  const t = [
+    tx('a', '2026-08-20', 500),
+    tx('b', '2026-09-01', 1000), tx('c', '2026-09-30', 2000),
+    tx('d', '2026-10-02', 300), tx('e', '2026-10-02', 200), tx('f', '2026-10-05', 1000),
+    tx('g', '2026-10-04', 9999, { excluded: true }),
+    tx('h', '2026-10-03', 5000, { currency: 'USD' }),
+  ];
+  const c = L.monthCurve(t, '2026-10', '2026-10-06');
+  assert.equal(c.days, 31);
+  assert.deepEqual(c.current, [0, 500, 500, 500, 1500, 1500]);
+  assert.equal(c.previous.length, 30);
+  assert.equal(c.previous[0], 1000);
+  assert.equal(c.previous[29], 3000);
+  // August nur teilweise erfasst: kein Vergleich für September.
+  assert.equal(L.monthCurve(t, '2026-09', '2026-10-06').previous, null);
+  assert.equal(L.monthCurve(t, '2026-09', '2026-10-06').current.length, 30);
+  assert.deepEqual(L.monthCurve(t, '2026-11', '2026-10-06').current, []);
+});

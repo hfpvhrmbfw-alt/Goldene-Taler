@@ -29,8 +29,9 @@ const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, 
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCategory: undefined, listMerchant: null, query: '', from: null,
-  importReport: '', fresh: new Set(), editing: null, editingRule: null,
+  importReport: '', fresh: new Set(), editing: null, editingRule: null, catsOpen: true,
 };
+try { view.catsOpen = localStorage.getItem('taler:cats') !== 'zu'; } catch { /* egal */ }
 const info = { lastImport: null, lastBackup: null, reviewDismissed: null, storageKind: 'indexeddb', standalone: false, version: '' };
 
 // ---------- Speichern ----------
@@ -88,7 +89,33 @@ function render() {
   const back = view.tab === 'rules' ? ['settings', 'einstellungen'] : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht'] : null;
   $('#head-left').innerHTML = back
     ? `<button class="backbtn" type="button" data-act="back" data-tab="${back[0]}">${BACK}<span>${back[1]}</span></button>` : '';
+  // Sicherung fällig: Punkt am Reiter Einstellungen statt einer Zeile in der Übersicht.
+  const due = ui.backupDue(state, info, c.today);
+  const st = $('.tabbar a[data-tab="settings"]');
+  st.classList.toggle('due', due);
+  st.setAttribute('aria-label', due ? 'Einstellungen, Sicherung fällig' : 'Einstellungen');
+  if (view.tab === 'overview') showCurveDay(el.querySelector('.curve'), null);
   updateBadge();
+}
+
+/** Verlauf: Stand an einem Tag (null = letzter Tag) in die Zeile über dem Diagramm schreiben. */
+function showCurveDay(fig, day) {
+  if (!fig) return;
+  const cur = fig.dataset.cur.split(',').map(Number);
+  const prev = fig.dataset.prev ? fig.dataset.prev.split(',').map(Number) : null;
+  const days = Number(fig.dataset.days);
+  const d = day === null ? cur.length : Math.max(1, Math.min(days, day));
+  const v = cur[Math.min(d, cur.length) - 1];
+  const m = (x) => ui.money(x, fig.dataset.currency);
+  let text = `bis ${d}. ${fig.dataset.name.toLowerCase()}: <b>${m(v)}</b>`;
+  if (d > cur.length) text = `${d}. ${fig.dataset.name.toLowerCase()}: noch offen`;
+  if (prev) text += ` · ${ui.esc(fig.dataset.pname.toLowerCase())}: ${m(prev[Math.min(d, prev.length) - 1])}`;
+  fig.querySelector('.readout').innerHTML = text;
+  const cross = fig.querySelector('.cross');
+  cross.style.display = day === null ? 'none' : '';
+  const x = ((d - 0.5) / days * 300).toFixed(1);
+  cross.setAttribute('x1', x);
+  cross.setAttribute('x2', x);
 }
 
 /** Zahl am Home-Bildschirm-Icon: Zahlungen ohne Kategorie (iOS 16.4+, nur installiert). */
@@ -647,6 +674,31 @@ function bind() {
       if (e.target.id === 'log-file') await importLog(text); else await restoreBackup(text);
     }
   });
+
+  // Kategorien auf- und zuklappen merken (toggle steigt nicht auf, daher capture).
+  document.addEventListener('toggle', (e) => {
+    if (e.target.dataset?.fold !== 'cats') return;
+    view.catsOpen = e.target.open;
+    try { localStorage.setItem('taler:cats', view.catsOpen ? 'auf' : 'zu'); } catch { /* egal */ }
+  }, true);
+
+  // Verlauf: antippen oder ziehen zeigt den Tag, loslassen springt zurück auf heute.
+  const curveAt = (e) => {
+    const plot = e.target.closest?.('.curve .plot');
+    if (!plot) return;
+    const fig = plot.closest('.curve');
+    const r = plot.getBoundingClientRect();
+    showCurveDay(fig, Math.floor((e.clientX - r.left) / r.width * Number(fig.dataset.days)) + 1);
+  };
+  document.addEventListener('pointerdown', curveAt);
+  document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' || e.buttons) curveAt(e); });
+  const curveReset = (e) => {
+    const fig = e.target.closest?.('.curve');
+    if (fig) showCurveDay(fig, null);
+  };
+  document.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') curveReset(e); });
+  document.addEventListener('pointercancel', curveReset);
+  document.addEventListener('pointerleave', (e) => { if (e.target.classList?.contains('plot')) curveReset(e); }, true);
 
   let qTimer;
   document.addEventListener('input', (e) => {

@@ -2,7 +2,7 @@
 import { CATEGORY_IDS } from './model.js';
 import {
   monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve,
 } from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
 import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
@@ -130,10 +130,8 @@ export function renderOverview(el, state, view, clock, info) {
 
   if (state.transactions.length === 0) {
     html += `
-    <div class="emptyhero">${coin('big')}<p>Noch keine Buchungen.<br>Richte einmal den Kurzbefehl ein, danach kommt jede Apple-Pay-Zahlung von selbst in die Datei <code>ausgaben.txt</code>.</p></div>
+    <div class="emptyhero">${coin('big')}<p>Noch keine Buchungen.<br>Richte einmal den Kurzbefehl ein, danach kommt jede Apple-Pay-Zahlung von selbst in die Datei <code>ausgaben.txt</code>. Einlesen kannst du sie unter <b>Einstellungen</b>.</p></div>
     <ul class="list">
-      ${importRow(info, clock.today)}
-      ${statementRow()}
       ${item({ tag: 'button', attrs: 'data-act="setup"', title: 'Kurzbefehl einrichten', sub: 'einmalig, etwa drei Minuten', chev: true })}
       ${item({ tag: 'button', attrs: 'data-act="demo"', title: 'Mit Beispieldaten ausprobieren', sub: 'lassen sich danach mit einem Tipp entfernen', chev: true })}
     </ul>
@@ -165,22 +163,25 @@ export function renderOverview(el, state, view, clock, info) {
     html += `<p class="barnote">Nicht eingerechnet: ${s.foreign.map((f) => `${money(f.cents, f.currency)} (${plural(f.count, 'Zahlung', 'Zahlungen')})`).join(', ')}. Den Betrag in ${esc(cur)} trägst du in der Buchung ein.</p>`;
   }
 
-  // Was zu tun ist: einlesen, einordnen, aufräumen. Petrol nur hier.
-  html += `<ul class="list todo">${importRow(info, clock.today)}`;
+  // Was zu tun ist: einordnen, aufräumen. Petrol nur hier. Einlesen und Sichern stehen unter Einstellungen.
+  let todo = '';
   if (open) {
-    html += item({ tag: 'button', cls: 'open', attrs: 'data-act="sort"', title: `${plural(open, 'Zahlung', 'Zahlungen')} einordnen`, sub: 'ohne Kategorie · ein Tipp pro Zahlung', chev: true });
+    todo += item({ tag: 'button', cls: 'open', attrs: 'data-act="sort"', title: `${plural(open, 'Zahlung', 'Zahlungen')} einordnen`, sub: 'ohne Kategorie · ein Tipp pro Zahlung', chev: true });
   }
   if (demoCount) {
-    html += item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true });
+    todo += item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true });
   }
-  if (backupDue(state, info, clock.today)) {
-    html += item({ tag: 'button', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, chev: true });
-  }
-  html += `</ul>${view.importReport || ''}`;
+  if (todo) html += `<ul class="list todo">${todo}</ul>`;
+  html += view.importReport || '';
+  html += curveBlock(state, view, clock, s);
 
   // Kategorien, dazu „ohne Kategorie“ als letzte Zeile, damit die Anteile zusammen 100 % ergeben.
+  // Klappbar; zugeklappt steht die größte Kategorie in der Kopfzeile.
   const cats = s.byCategory.filter((c) => c.categoryId !== null);
-  html += `${head('kategorien')}<ul class="list">`;
+  const top = cats[0] && cats[0].cents > 0 ? `${catLabel(cats[0].categoryId)} ${pct(cats[0].share)}` : '';
+  html += `<details class="fold" data-fold="cats"${view.catsOpen ? ' open' : ''}>
+    <summary><span class="cap">kategorien</span><span class="foldsum">${esc(top)}</span></summary>
+    <ul class="list">`;
   if (s.count === 0) html += `<li class="empty">In diesem Monat noch keine Zahlungen.</li>`;
   cats.forEach((c, i) => {
     html += item({
@@ -196,7 +197,7 @@ export function renderOverview(el, state, view, clock, info) {
       extra: `<span class="share" aria-hidden="true"><i style="width:${(uncategorized.share * 100).toFixed(1)}%"></i></span>`,
     });
   }
-  html += `</ul>`;
+  html += `</ul></details>`;
   if (view.month === clock.month) html += reviewCard(state, clock, info);
 
   if (s.topMerchants.length) {
@@ -206,6 +207,48 @@ export function renderOverview(el, state, view, clock, info) {
   html += yearBlock(state, view, clock, months);
   if (view.month === clock.month) html += recurringBlock(state, clock);
   el.innerHTML = html;
+}
+
+/**
+ * Verlauf: aufgelaufene Ausgaben im Monat als Linie, Vormonat gestrichelt, Budget als waagrechte Linie.
+ * Antippen oder Ziehen zeigt den Stand an einem Tag (main.js liest data-cur/data-prev).
+ */
+function curveBlock(state, view, clock, s) {
+  const cur = state.settings.currency;
+  const c = monthCurve(state.transactions, view.month, clock.today, cur);
+  if (!c.current.some((v) => v !== 0)) return '';
+  const budget = state.settings.monthlyBudgetCents || null;
+  const prev = c.previous;
+  const max = Math.max(1, ...c.current, ...(prev || []), budget || 0) * 1.08;
+  const W = 300;
+  const H = 120;
+  const xy = (v, i, days) => `${((i + 0.5) / days * W).toFixed(1)},${(H - Math.max(0, v) / max * H).toFixed(1)}`;
+  const line = (vals, days) => vals.map((v, i) => xy(v, i, days)).join(' ');
+  const last = c.current.length - 1;
+  const [ex, ey] = xy(c.current[last], last, c.days).split(',');
+  const prevName = monthName(previousMonth(view.month));
+  const area = `${(0.5 / c.days * W).toFixed(1)},${H} ${line(c.current, c.days)} ${ex},${H}`;
+  const legend = [`<span class="lg cur">${esc(monthName(view.month))}</span>`];
+  if (prev) legend.push(`<span class="lg prev">${esc(prevName)}</span>`);
+  if (budget) legend.push(`<span class="lg bud">Budget</span>`);
+  const label = `Verlauf ${monthLabel(view.month)}: ${money(c.current[last], cur)} bis zum ${last + 1}.${prev ? `, ${prevName} am selben Tag ${money(prev[Math.min(last, prev.length - 1)], cur)}` : ''}`;
+  return `${head('verlauf')}
+  <figure class="curve" data-cur="${c.current.join(',')}" data-prev="${prev ? prev.join(',') : ''}" data-days="${c.days}" data-pdays="${c.previousDays}"
+    data-name="${esc(monthName(view.month))}" data-pname="${esc(prevName)}" data-currency="${esc(cur)}">
+    <p class="readout" aria-live="polite"></p>
+    <div class="plot">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}">
+        ${budget ? `<line class="bud" x1="0" x2="${W}" y1="${(H - budget / max * H).toFixed(1)}" y2="${(H - budget / max * H).toFixed(1)}"/>` : ''}
+        ${prev ? `<polyline class="prev" points="${line(prev, c.previousDays)}"/>` : ''}
+        <polygon class="area" points="${area}"/>
+        <polyline class="cur" points="${line(c.current, c.days)}"/>
+        <line class="cross" x1="0" x2="0" y1="0" y2="${H}" style="display:none"/>
+      </svg>
+      <i class="dot" style="left:${(ex / W * 100).toFixed(2)}%;top:${(ey / H * 100).toFixed(2)}%"></i>
+    </div>
+    <div class="axis" aria-hidden="true"><span>1.</span><span>15.</span><span>${c.days}.</span></div>
+    <figcaption class="legend">${legend.join('')}</figcaption>
+  </figure>`;
 }
 
 const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
@@ -347,6 +390,13 @@ export function renderSettings(el, state, view, info, clock) {
   <h2 class="bigtitle">einstellungen</h2>
   <p class="meta-line">${plural(state.transactions.length, 'Buchung', 'Buchungen')} · alles bleibt auf diesem Gerät</p>
 
+  ${head('einlesen')}
+  <ul class="list">
+    ${importRow(info, clock.today)}
+    ${statementRow()}
+    ${backupDue(state, info, clock.today) ? item({ tag: 'button', cls: 'open', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, chev: true }) : ''}
+  </ul>
+
   ${head(`monatsbudget (${esc(cur)})`)}
   <form class="inlineform" id="budget-form">
     <label class="field"><span class="visually-hidden">Monatsbudget in ${esc(cur)}, leer für kein Budget</span><input name="budget" inputmode="decimal" placeholder="leer = kein Budget" value="${b ? amountInput(b) : ''}"></label>
@@ -358,8 +408,7 @@ export function renderSettings(el, state, view, info, clock) {
     ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="rules"', title: 'Regeln', sub: `${custom} eigene · ${std} vorgegeben`, chev: true })}
   </ul>
 
-  ${head('kurzbefehl')}
-  <ul class="list">${importRow(info, clock.today)}</ul>
+  ${head('hilfe')}
   <details id="setup-details"><summary>kurzbefehl einrichten</summary><div>
     <ol class="steps">
       <li>App <b>Kurzbefehle</b>, unten <b>Automation</b>, dann <b>+</b> und <b>Mitteilung</b>. App: <b>Wallet</b>. <b>Sofort ausführen</b>, <b>Weiter</b>, <b>Neuer leerer Kurzbefehl</b>.</li>
@@ -368,7 +417,7 @@ export function renderSettings(el, state, view, info, clock) {
         <pre>(Formatiertes Datum) ; (Titel) ; (Untertitel) ; (Text)</pre>
         <span class="muted">Über der Tastatur <i>Kurzbefehleingabe</i> wählen, die Blase antippen und unter „Laden“ das Feld wählen. Fehlt es, bei <i>Typ</i> zuerst <i>Mitteilung</i> einstellen.</span></li>
       <li>Aktion <b>An Textdatei anhängen</b>: Text = die gelbe Variable <i>Text</i>, Ordner <b>Shortcuts</b>, Dateipfad <code>ausgaben.txt</code>, <b>Neue Zeile erstellen</b> an.</li>
-      <li>Fertig. Nach der nächsten Zahlung in der Übersicht <b>Neue Zahlungen einlesen</b>.</li>
+      <li>Fertig. Nach der nächsten Zahlung hier oben <b>Neue Zahlungen einlesen</b>.</li>
     </ol>
     <p class="muted">Mitteilungen ohne Betrag (Bordkarten, Tickets) landen auch in der Datei. Taler überspringt sie still.</p>
     <div class="note info"><span class="cap">hinweis</span>iOS lässt Kurzbefehle nicht direkt in den Speicher einer Web-App schreiben, deshalb der Weg über die Datei.</div>
@@ -377,11 +426,10 @@ export function renderSettings(el, state, view, info, clock) {
     <label class="field"><span class="cap">zeilen</span><textarea id="log-text" placeholder="2026-10-20T18:55:41+02:00;REWE Markt;;42,17 € mit Visa"></textarea></label>
     <button class="btn" data-act="import-text">einlesen</button></div></details>
 
-  ${head('kontoauszug')}
-  <ul class="list">${statementRow()}</ul>
+  <details><summary>kontoauszug: was übernommen wird</summary><div>
   <p class="muted">Übernimmt Kartenzahlungen und Lastschriften, keine Überweisungen, Daueraufträge oder Wertpapiere.
     Was der Kurzbefehl schon per Apple Pay erfasst hat (gleicher Betrag, Datum bis fünf Tage später), kommt nicht doppelt.
-    Das PDF wird nur hier im Browser gelesen und nicht gespeichert.</p>
+    Das PDF wird nur hier im Browser gelesen und nicht gespeichert.</p></div></details>
 
   ${head('sicherung')}
   <ul class="list">
