@@ -341,7 +341,7 @@ h2.cap { font:500 calc(13*var(--u)) var(--font-label); color:var(--muted); }
 .sortamount { font:var(--title-weight) calc(28*var(--u))/1.2 var(--font-title); font-variant-numeric:tabular-nums; margin:var(--s1) 0; }
 .catgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:var(--s2); margin-bottom:var(--s4); }
 .catbtn { min-height:var(--tap); padding:6px var(--s2); hyphens:auto; border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:var(--r-control); font:500 calc(15*var(--u))/1.2 var(--font-body); text-align:left; cursor:pointer; }
-.catbtn:hover, .catbtn:active { border-color:var(--accent); background:var(--accent-tint); color:var(--accent-text); }
+.catbtn:active { border-color:var(--accent); background:var(--accent-tint); color:var(--accent-text); }
 .ruleopt { margin:0 0 var(--s4); }
 .undo { display:block; margin:0 0 var(--s3) calc(var(--s2) * -1); text-align:left; font-size:calc(14*var(--u)); overflow-wrap:anywhere; }
 
@@ -352,7 +352,6 @@ h2.cap { font:500 calc(13*var(--u)) var(--font-label); color:var(--muted); }
 .empty { padding:var(--s5) 0; color:var(--muted); }
 .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 label.item { cursor:pointer; }
-label.item:hover { background:var(--sunken); }
 .item .n { min-width:9ch; }
 .mono { font-family:var(--font-label); }
 
@@ -376,7 +375,6 @@ label.item:hover { background:var(--sunken); }
 .ybar.on .col i { background:var(--accent); }
 .ybar.on .lbl { color:var(--accent-text); font-weight:500; }
 .ybar.future .col { border-bottom-style:dashed; }
-.ybar:not(:disabled):hover .col { background:var(--sunken); }
 
 /* Rückblick auf den Vormonat: der eine reiche Moment */
 .review { border:1px solid var(--line); background:var(--surface); border-radius:var(--r-card); padding:var(--s3) var(--s4) var(--s2); margin:var(--s3) 0 var(--s4); }
@@ -389,3 +387,32 @@ label.item:hover { background:var(--sunken); }
 .review ul { list-style:none; margin:0 0 var(--s1); padding:0; }
 .review li { padding:var(--s2) 0; border-top:1px solid var(--line); font-size:calc(15*var(--u)); overflow-wrap:anywhere; }
 .review .textbtn { padding:0; margin:0; }
+
+/* Hover nur mit Maus oder Trackpad. Auf dem iPhone bleibt :hover nach dem Tippen hängen und sieht aus wie eine Auswahl. */
+@media (hover: none) {
+  a.item:hover, button.item:hover, .iconbtn:hover, .btn:hover, summary:hover, .check:hover { background:transparent; }
+  .btn:hover { color:var(--ink); }
+  .btn.primary:hover { background:var(--accent); color:var(--accent-ink); }
+  .btn.danger:hover { background:transparent; color:var(--err); }
+}
+@media (hover: hover) {
+  .catbtn:hover { border-color:var(--accent); background:var(--accent-tint); color:var(--accent-text); }
+  label.item:hover { background:var(--sunken); }
+  .ybar:not(:disabled):hover .col { background:var(--sunken); }
+}
+
+/* Große Schrift: Tabbar-Beschriftung wächst nur begrenzt, Kennzahlen stehen bei Bedarf untereinander. */
+.tabbar a { font-size:min(calc(12*var(--u)), 13px); text-align:center; }
+.kpis { grid-template-columns:repeat(auto-fit, minmax(min(100%, calc(150*var(--u))), 1fr)); }
+.kpi .v { overflow-wrap:normal; }
+.kpi .v small { white-space:nowrap; }
+
+/* Eigennamen (Händler) bleiben, wie sie geschrieben sind. */
+.bigtitle.asis { text-transform:none; }
+.num .in, .n .in, .meta-line .in { color:var(--ok); }
+
+/* Löschen am Ende des Sheets, weg von „speichern“. */
+.deletebtn { display:block; padding:0; margin:var(--s2) 0 0; text-align:left; }
+.deletebtn[hidden] { display:none; }
+#base-field[hidden] { display:none; }
+.toast button { min-height:var(--tap); }

@@ -20,6 +20,7 @@ export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
  * @property {string|null} time     HH:MM oder null
  * @property {number} amountCents   ganze Cent, positiv = Ausgabe, negativ = Erstattung
  * @property {string} currency      ISO 4217, z. B. EUR
+ * @property {number|null} baseCents  bei Fremdwährung: abgerechneter Betrag in der Hauptwährung (sonst null)
  * @property {string} merchant
  * @property {string} card
  * @property {string|null} categoryId
@@ -39,10 +40,11 @@ export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
 /**
  * @typedef {Object} Settings
  * @property {number|null} monthlyBudgetCents
+ * @property {string|null} budgetSince  YYYY-MM, ab dem das Budget gilt (für den Rückblick)
  * @property {string} currency
  */
 
-export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, currency: 'EUR' });
+export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, budgetSince: null, currency: 'EUR' });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -50,7 +52,7 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 /** @returns {Transaction} */
 export function emptyTransaction(id, date) {
   return {
-    id, date, time: null, amountCents: 0, currency: 'EUR', merchant: '', card: '',
+    id, date, time: null, amountCents: 0, currency: 'EUR', baseCents: null, merchant: '', card: '',
     categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false,
   };
 }
@@ -71,6 +73,7 @@ export function sanitizeTransaction(raw) {
     id, date, time,
     amountCents: Math.round(raw.amountCents),
     currency,
+    baseCents: Number.isFinite(raw.baseCents) ? Math.round(raw.baseCents) : null,
     merchant: str(raw.merchant),
     card: str(raw.card, 80),
     categoryId,
@@ -94,8 +97,10 @@ export function sanitizeRule(raw) {
 export function sanitizeSettings(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const b = s.monthlyBudgetCents;
+  const budget = typeof b === 'number' && Number.isFinite(b) && b > 0 ? Math.round(b) : null;
   return {
-    monthlyBudgetCents: typeof b === 'number' && Number.isFinite(b) && b > 0 ? Math.round(b) : null,
+    monthlyBudgetCents: budget,
+    budgetSince: budget && /^\d{4}-\d{2}$/.test(s.budgetSince) ? s.budgetSince : null,
     currency: /^[A-Z]{3}$/.test(s.currency) ? s.currency : DEFAULT_SETTINGS.currency,
   };
 }

@@ -62,13 +62,13 @@
   <form method="dialog" id="edit-form" class="stack">
     <div class="sheethead">
       <h2 id="edit-title">buchung</h2>
-      <button class="textbtn danger" value="delete" id="edit-delete" formnovalidate>löschen</button>
     </div>
     <label class="field"><span class="cap">händler</span><input name="merchant" required autocomplete="off"></label>
     <div class="two">
-      <label class="field"><span class="cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
+      <label class="field"><span class="cap" id="edit-amount-cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
       <label class="field"><span class="cap">karte</span><input name="card" autocomplete="off"></label>
     </div>
+    <label class="field" id="base-field" hidden><span class="cap" id="base-cap">abgerechnet in eur</span><input name="baseAmount" inputmode="decimal" placeholder="laut Kontoauszug, leer = nicht mitzählen" autocomplete="off"></label>
     <div class="two">
       <label class="field"><span class="cap">datum</span><input name="date" type="date" required></label>
       <label class="field"><span class="cap">uhrzeit</span><input name="time" type="time"></label>
@@ -80,6 +80,7 @@
     <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
     <label class="ruleopt exclopt"><input type="checkbox" name="excluded"><span>Nicht mitzählen<span class="muted small">z. B. für jemand anderen ausgelegt, Kaution, Umbuchung</span></span></label>
     <button type="button" class="textbtn merchantlink" id="edit-merchant" data-act="show-merchant"></button>
+    <button class="textbtn danger deletebtn" value="delete" id="edit-delete" formnovalidate>buchung löschen</button>
     <p class="err-text" id="edit-error" role="alert" hidden></p>
     <div class="actions sticky">
       <button class="btn primary" value="save">speichern</button>
@@ -96,11 +97,11 @@
   <form method="dialog" id="rule-form" class="stack">
     <div class="sheethead">
       <h2 id="rule-title">regel</h2>
-      <button class="textbtn danger" value="delete" id="rule-delete" formnovalidate>löschen</button>
     </div>
     <label class="field"><span class="cap">händler enthält</span><input name="pattern" required placeholder="z. B. rewe to go" autocomplete="off"></label>
     <label class="field"><span class="cap">kategorie</span><select name="categoryId"></select></label>
     <p class="muted small">Das Muster muss am Wortanfang im Händlernamen stehen. Längere Muster gewinnen, von Hand gesetzte Kategorien bleiben.</p>
+    <button class="textbtn danger deletebtn" value="delete" id="rule-delete" formnovalidate>regel löschen</button>
     <div class="actions sticky">
       <button class="btn primary" value="save">speichern</button>
       <button class="btn" value="cancel" formnovalidate>abbrechen</button>
