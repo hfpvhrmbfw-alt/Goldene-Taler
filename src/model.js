@@ -10,8 +10,8 @@ export const CATEGORY_IDS = [
   'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'sonstiges',
 ];
 
-/** demo = Beispieldaten, lassen sich getrennt entfernen. */
-export const SOURCES = ['shortcut', 'manual', 'demo'];
+/** demo = Beispieldaten, lassen sich getrennt entfernen. statement = aus einem Kontoauszug (PDF). */
+export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
 
 /**
  * @typedef {Object} Transaction
@@ -25,7 +25,7 @@ export const SOURCES = ['shortcut', 'manual', 'demo'];
  * @property {string|null} categoryId
  * @property {boolean} manualCategory  true = von Hand gesetzt, Regeln überschreiben nicht
  * @property {string} note
- * @property {'shortcut'|'manual'|'demo'} source
+ * @property {'shortcut'|'manual'|'demo'|'statement'} source
  */
 
 /**

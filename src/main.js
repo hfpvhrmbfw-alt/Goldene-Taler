@@ -5,10 +5,12 @@ import {
 } from './model.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
-  sortTransactions, monthOf,
+  sortTransactions, monthOf, findCrossDuplicates,
 } from './logic.js';
+import { parseStatement } from './statement.js';
+import { pdfPages } from './pdf.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { IMPORT_ERRORS, CATEGORY_LABELS } from './texts.js';
+import { IMPORT_ERRORS, CATEGORY_LABELS, STATEMENT_ERRORS } from './texts.js';
 import * as ui from './ui.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -174,11 +176,20 @@ async function saveBackup() {
 }
 
 // ---------- Import ----------
+/** Neue Buchungen ohne die, die aus der anderen Quelle (Kurzbefehl bzw. Kontoauszug) schon da sind. */
+function withoutCrossDuplicates(incoming) {
+  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
+  const dupes = findCrossDuplicates(state.transactions, incoming.filter((t) => !known.has(t.id)));
+  return { incoming: incoming.filter((t) => !dupes.has(t.id)), dupes: dupes.size };
+}
+
 async function importLog(text, { demo = false } = {}) {
   const snap = snapshot();
   const parsed = parseLog(text, state.settings.currency);
   let incoming = parsed.transactions;
+  let dupes = 0;
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
+  else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
   const categorized = applyRules(incoming, state.rules);
   const { transactions: merged, added } = mergeTransactions(state.transactions, categorized, state.deletedIds);
   state.transactions = merged;
@@ -190,12 +201,36 @@ async function importLog(text, { demo = false } = {}) {
     const ignoredNew = Math.max(0, parsed.ignored.length - (info.lastImport?.ignored ?? 0));
     info.lastImport = { at: c.today, time: c.time, added: added.length, ignored: parsed.ignored.length };
     await db.setMeta('lastImport', info.lastImport);
-    view.importReport = ui.importReportHtml(added.length, incoming.length - added.length, parsed.errors, ignoredNew);
+    view.importReport = ui.importReportHtml(added.length, incoming.length - added.length, parsed.errors, ignoredNew, dupes);
   }
   view.fresh = new Set(added.map((t) => t.id));
   if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
   selectTab('overview');
   if (added.length) undoable(demo ? 'Beispieldaten geladen' : `${added.length} neue ${added.length === 1 ? 'Zahlung' : 'Zahlungen'} eingelesen`, snap);
+  else toast('Keine neuen Zahlungen');
+}
+
+/** Kontoauszug (PDF) einlesen. Die Datei wird nur gelesen, nicht gespeichert. */
+async function importStatement(file) {
+  let pages;
+  try {
+    pages = await pdfPages(await file.arrayBuffer());
+  } catch {
+    await ask(STATEMENT_ERRORS.pdf, 'OK', { cancel: false });
+    return;
+  }
+  const r = parseStatement(pages, state.settings.currency);
+  if (!r.ok) { await ask(STATEMENT_ERRORS[r.error], 'OK', { cancel: false }); return; }
+  const snap = snapshot();
+  const { incoming, dupes } = withoutCrossDuplicates(r.transactions);
+  const { transactions: merged, added } = mergeTransactions(state.transactions, applyRules(incoming, state.rules), state.deletedIds);
+  state.transactions = merged;
+  if (added.length) await saveTransactions(added);
+  view.importReport = ui.statementReportHtml(r.bank, added.length, incoming.length - added.length, dupes, r.other, r.errors);
+  view.fresh = new Set(added.map((t) => t.id));
+  if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
+  selectTab('overview');
+  if (added.length) undoable(`${added.length} ${added.length === 1 ? 'Zahlung' : 'Zahlungen'} aus dem Kontoauszug`, snap);
   else toast('Keine neuen Zahlungen');
 }
 
@@ -322,7 +357,7 @@ async function deleteEditing() {
   const snap = snapshot();
   state.transactions = state.transactions.filter((x) => x.id !== t.id);
   await db.deleteTransaction(t.id);
-  if (t.source === 'shortcut') {
+  if (t.source === 'shortcut' || t.source === 'statement') {
     state.deletedIds = [...state.deletedIds, t.id];
     await db.setMeta('deletedIds', state.deletedIds);
   }
@@ -544,6 +579,12 @@ function bind() {
   $('#sort-dialog').addEventListener('close', () => render());
 
   document.addEventListener('change', async (e) => {
+    if (e.target.id === 'statement-file') {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file) await importStatement(file);
+      return;
+    }
     if (e.target.id === 'log-file' || e.target.id === 'backup-file') {
       const file = e.target.files[0];
       if (!file) return;

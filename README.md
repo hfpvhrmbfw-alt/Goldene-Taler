@@ -13,6 +13,12 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking. Gesta
    (Bordkarten, Tickets) werden still übersprungen.
 4. **Zahlungen einordnen**: ein Tipp pro Zahlung, Taler merkt sich den Händler auf Wunsch als Regel.
 
+5. **Kontoauszug einlesen** (Einstellungen): PDF-Kontoauszug von Trade Republic oder ING (Girokonto)
+   auswählen. Übernommen werden Kartenzahlungen und Lastschriften, auch ohne Apple Pay. Überweisungen, Daueraufträge,
+   Gutschriften und Wertpapiere nicht. Was der Kurzbefehl schon erfasst hat (gleicher Betrag, Auszug höchstens einen Tag
+   früher oder fünf Tage später), kommt nicht doppelt, egal in welcher Reihenfolge eingelesen wird. Das PDF liest
+   pdf.js direkt im Browser (`vendor/pdfjs`, nichts aus dem Netz), die Datei selbst wird nicht gespeichert.
+
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 
@@ -33,6 +39,8 @@ Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wie
 |---|---|
 | `src/model.js` | Datenmodell, Kategorie-IDs, Validierung, Export/Import, Migration |
 | `src/logic.js` | Reine Logik: Zeilen lesen, Beträge parsen, Regeln, Monatsauswertung |
+| `src/statement.js` | Reine Logik: Kontoauszüge (Textstücke mit Position) von Trade Republic und ING lesen |
+| `src/pdf.js` | Adapter zu pdf.js (`vendor/pdfjs`, Apache-2.0), wird erst beim ersten PDF geladen |
 | `src/catalog.js` | Startregeln für häufige Händler (vom Assistenten zusammengestellt, ohne Gewähr) |
 | `src/storage.js` | IndexedDB mit localStorage-Fallback |
 | `src/texts.js` | Beschriftungen und Meldungen |

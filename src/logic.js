@@ -400,3 +400,34 @@ export function daysBetween(a, b) {
   const utc = (d) => Date.UTC(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10)));
   return Math.round((utc(b) - utc(a)) / 86400000);
 }
+
+/**
+ * Dieselbe Kartenzahlung kann zweimal ankommen: per Kurzbefehl (Apple Pay) und später im Kontoauszug.
+ * Gleich heißt: gleicher Betrag, und der Auszug nennt sie höchstens einen Tag früher oder fünf Tage später
+ * (Banken buchen oft verzögert). Verglichen wird nur Kurzbefehl mit Auszug, jede vorhandene Buchung deckt
+ * höchstens eine neue ab, und bei mehreren Kandidaten gewinnt das nächste Datum.
+ * @param {import('./model.js').Transaction[]} existing
+ * @param {import('./model.js').Transaction[]} incoming  neue Buchungen, deren ID noch unbekannt ist
+ * @returns {Set<string>} IDs aus incoming, die schon erfasst sind
+ */
+export function findCrossDuplicates(existing, incoming) {
+  const other = { statement: 'shortcut', shortcut: 'statement' };
+  const taken = new Set();
+  const dupes = new Set();
+  for (const t of incoming) {
+    const want = other[t.source];
+    if (!want) continue;
+    let best = null;
+    let bestDist = Infinity;
+    for (const e of existing) {
+      if (e.source !== want || taken.has(e.id) || e.amountCents !== t.amountCents || e.currency !== t.currency) continue;
+      const shortcutDate = want === 'shortcut' ? e.date : t.date;
+      const statementDate = want === 'shortcut' ? t.date : e.date;
+      const d = daysBetween(shortcutDate, statementDate);
+      if (d < -1 || d > 5) continue;
+      if (Math.abs(d) < bestDist) { bestDist = Math.abs(d); best = e; }
+    }
+    if (best) { taken.add(best.id); dupes.add(t.id); }
+  }
+  return dupes;
+}

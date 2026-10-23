@@ -2,7 +2,7 @@
 import { CATEGORY_IDS } from './model.js';
 import { monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween } from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS } from './texts.js';
+import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -86,6 +86,11 @@ function importRow(info, today) {
   return `<li><label class="item action" for="log-file"><span class="t"><b>Neue Zahlungen einlesen</b><span>${esc(sub)}</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
 }
 
+/** Zeile „kontoauszug einlesen“: öffnet den Dateiwähler für ein PDF von Trade Republic oder ING. */
+function statementRow() {
+  return `<li><label class="item action" for="statement-file"><span class="t"><b>Kontoauszug einlesen</b><span>PDF von Trade Republic oder ING · bleibt auf dem Gerät</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
+}
+
 /** Sicherung fällig? Ab 20 eigenen Buchungen und wenn die letzte Sicherung über 30 Tage her ist. */
 export function backupDue(state, info, today) {
   const own = state.transactions.filter((t) => t.source !== 'demo').length;
@@ -118,6 +123,7 @@ export function renderOverview(el, state, view, clock, info) {
     <div class="emptyhero">${coin('big')}<p>Noch keine Buchungen.<br>Richte einmal den Kurzbefehl ein, danach kommt jede Apple-Pay-Zahlung von selbst in die Datei <code>ausgaben.txt</code>.</p></div>
     <ul class="list">
       ${importRow(info, clock.today)}
+      ${statementRow()}
       ${item({ tag: 'button', attrs: 'data-act="setup"', title: 'Kurzbefehl einrichten', sub: 'einmalig, etwa drei Minuten', chev: true })}
       ${item({ tag: 'button', attrs: 'data-act="demo"', title: 'Mit Beispieldaten ausprobieren', sub: 'lassen sich danach mit einem Tipp entfernen', chev: true })}
     </ul>
@@ -272,6 +278,12 @@ export function renderSettings(el, state, view, info, clock) {
     <label class="field"><span class="cap">zeilen</span><textarea id="log-text" placeholder="2026-10-20T18:55:41+02:00;REWE Markt;;42,17 € mit Visa"></textarea></label>
     <button class="btn" data-act="import-text">einlesen</button></div></details>
 
+  ${head('kontoauszug')}
+  <ul class="list">${statementRow()}</ul>
+  <p class="muted">Übernimmt Kartenzahlungen und Lastschriften, keine Überweisungen, Daueraufträge oder Wertpapiere.
+    Was der Kurzbefehl schon per Apple Pay erfasst hat (gleicher Betrag, Datum bis fünf Tage später), kommt nicht doppelt.
+    Das PDF wird nur hier im Browser gelesen und nicht gespeichert.</p>
+
   ${head('sicherung')}
   <ul class="list">
     ${item({ tag: 'button', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: backupLabel(info, clock.today), n: 'json' })}
@@ -340,14 +352,24 @@ export function renderSorter(el, state, s, clock) {
 }
 
 /** Bericht nach dem Einlesen der Kurzbefehl-Datei. Zeilen ohne Betrag sind kein Fehler und erscheinen nur grau. */
-export function importReportHtml(added, known, errors, ignoredNew) {
-  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${added ? 'eingelesen' : 'nichts neues'}</span>${added} neu, ${known} schon bekannt.</div>`;
+export function importReportHtml(added, known, errors, ignoredNew, dupes = 0) {
+  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${added ? 'eingelesen' : 'nichts neues'}</span>${added} neu, ${known} schon bekannt${dupes ? `, ${dupes} schon aus dem Kontoauszug` : ''}.</div>`;
   if (errors.length) {
     html += `<div class="note warn"><span class="cap">übersprungen</span>${plural(errors.length, 'Zeile', 'Zeilen')} nicht lesbar: `
       + errors.slice(0, 5).map((e) => `Zeile ${e.line} (${esc(LOG_ERRORS[e.error] || e.error)})`).join(', ')
       + (errors.length > 5 ? ' …' : '') + '</div>';
   }
   if (ignoredNew) html += `<p class="barnote">${plural(ignoredNew, 'Wallet-Mitteilung', 'Wallet-Mitteilungen')} ohne Betrag (z. B. Bordkarte) übersprungen.</p>`;
+  return html;
+}
+
+/** Ergebnis eines Kontoauszugs: neu, bekannt, schon per Kurzbefehl da, nicht übernommen. */
+export function statementReportHtml(bank, added, known, dupes, other, errors) {
+  const parts = [`${added} neu`, `${known} schon bekannt`];
+  if (dupes) parts.push(`${dupes} schon per Apple Pay erfasst`);
+  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${esc(BANK_LABELS[bank] || bank)}</span>${parts.join(', ')}.</div>`;
+  if (errors) html += `<div class="note warn"><span class="cap">übersprungen</span>${plural(errors, 'Zeile', 'Zeilen')} nicht lesbar.</div>`;
+  if (other) html += `<p class="barnote">${plural(other, 'Buchung', 'Buchungen')} ohne Karte oder Lastschrift (Überweisungen, Gutschriften, Wertpapiere) nicht übernommen.</p>`;
   return html;
 }
 
