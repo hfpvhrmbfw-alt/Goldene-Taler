@@ -421,7 +421,7 @@ label.item { cursor:pointer; }
 details.fold { border:0; margin:var(--s5) 0 0; }
 details.fold > summary { padding:0 0 var(--s1); min-height:var(--tap); border-bottom:1px solid var(--line); text-transform:none; letter-spacing:0; font-weight:400; }
 details.fold > summary .cap { color:var(--muted); font-weight:500; }
-details.fold > summary .foldsum { margin-left:auto; color:var(--muted); font:400 calc(14*var(--u)) var(--font-body); }
+details.fold > summary .foldsum { margin-left:auto; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--muted); font:400 calc(14*var(--u)) var(--font-body); }
 details.fold[open] > summary .foldsum { visibility:hidden; }
 details.fold > summary::after { content:"›"; font-size:calc(20*var(--u)); line-height:1; color:var(--faint); transform:rotate(90deg); transition:transform .15s; }
 details.fold[open] > summary::after { content:"›"; transform:rotate(-90deg); }
