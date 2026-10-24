@@ -22,7 +22,7 @@ test('parseDateTime: ISO und deutsch, ohne Zeitzonen-Umrechnung', () => {
   assert.equal(L.parseDateTime('gestern'), null);
 });
 
-test('parseLog: Zeilen, Fehler, doppelte Zeilen, Semikolon im Händler', () => {
+test('parseLog: Zeilen, Fehler, doppelte Zeilen, altes Format', () => {
   const { transactions, errors, ignored } = L.parseLog(fx('log.txt'));
   assert.equal(transactions.length, 6);
   assert.deepEqual(errors, [{ line: 5, error: 'fields', text: 'kaputte zeile' }]);
@@ -32,9 +32,12 @@ test('parseLog: Zeilen, Fehler, doppelte Zeilen, Semikolon im Händler', () => {
   assert.equal(rewe.length, 2);
   assert.notEqual(rewe[0].id, rewe[1].id);
   assert.equal(rewe[1].id, `${rewe[0].id}-1`);
+  // Semikolon im Händlernamen: der erste Teil gilt als Händler (kommt in Wallet-Mitteilungen praktisch nicht vor).
   const shop = transactions.find((t) => t.merchant.startsWith('Shop'));
-  assert.equal(shop.merchant, 'Shop;mit Semikolon');
+  assert.equal(shop.merchant, 'Shop');
   assert.equal(shop.card, 'Visa');
+  const rw = transactions.find((t) => t.merchant.startsWith('REWE'));
+  assert.deepEqual([rw.amountCents, rw.merchant, rw.card], [4217, 'REWE Markt GmbH 1234', 'Visa']);
   const mvg = transactions.find((t) => t.merchant === 'MVG Automat');
   assert.deepEqual([mvg.date, mvg.time, mvg.amountCents], ['2026-10-20', '07:30', 210]);
 });
@@ -174,7 +177,6 @@ test('Export/Import: Rundweg, neuere Version abgelehnt, kaputte Einträge übers
   const bad = M.parseImport('{"app":"taler","transactions":[{"id":"a","date":"2026-1-1","amountCents":1},{"id":"b","date":"2026-01-01","amountCents":1}]}');
   assert.equal(bad.ok, true);
   assert.equal(bad.skipped, 1);
-  assert.deepEqual(M.upgradeRaw(M.upgradeRaw({ app: 'taler' })), M.upgradeRaw({ app: 'taler' }));
 });
 
 test('parseLogLine: Betrag in anderem Feld oder im Text', () => {

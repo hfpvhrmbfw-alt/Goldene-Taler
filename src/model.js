@@ -1,4 +1,4 @@
-// Datenmodell: Typen, Stammdaten (stabile IDs), Validierung, Export/Import, Migration.
+// Datenmodell: Typen, Stammdaten (stabile IDs), Validierung, Export/Import.
 // Keine Abhängigkeiten, keine Anzeigetexte.
 
 export const APP_ID = 'taler';
@@ -105,13 +105,6 @@ export function sanitizeSettings(raw) {
   };
 }
 
-/** Hebt alte Daten auf das aktuelle Schema. Idempotent. Bisher nur Version 1. */
-export function upgradeRaw(data) {
-  const d = { ...data };
-  if (!d.version) d.version = 1;
-  return d;
-}
-
 /**
  * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[]}} state
  * @param {string} exportedAt ISO-Zeitstempel
@@ -139,7 +132,7 @@ export function parseImport(text) {
   try { data = JSON.parse(text); } catch { return { ok: false, error: 'json' }; }
   if (!data || typeof data !== 'object' || data.app !== APP_ID) return { ok: false, error: 'app' };
   if (typeof data.version === 'number' && data.version > SCHEMA_VERSION) return { ok: false, error: 'newer' };
-  data = upgradeRaw(data);
+  // Bisher gibt es nur Version 1. Kommt eine zweite, wird alte Sicherung hier umgebaut.
   if (!Array.isArray(data.transactions)) return { ok: false, error: 'shape' };
   const transactions = data.transactions.map(sanitizeTransaction).filter(Boolean);
   const rules = (Array.isArray(data.rules) ? data.rules : []).map(sanitizeRule).filter(Boolean);
