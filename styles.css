@@ -1,5 +1,8 @@
 /* Castra · Blei v1.0 (Anna): minimalistisch, mobil zuerst. Tokens und Komponenten aus der Castra-Stilfamilie,
    App-Ergänzungen am Ende. Ein Akzent (Petrol), nur für den Fokus. */
+/* Schriften liegen in fonts/ (SIL OFL 1.1), nur Latein-Zeichensatz; nichts wird aus dem Netz geladen. */
+@font-face { font-family:"Asap"; src:url("fonts/asap.woff2") format("woff2"); font-weight:400 600; font-display:swap; }
+@font-face { font-family:"Chivo Mono"; src:url("fonts/chivo-mono.woff2") format("woff2"); font-weight:400 500; font-display:swap; }
 :root {
   --bg:#FAFAF8; --surface:#FFFFFF; --sunken:#EFEFEB; --line:#E3E3DE; --ink:#111111; --muted:#5C5C58; --faint:#858580;
   --accent:#0B7A74; --accent-text:#08665F; --accent-hover:#096A64; --accent-tint:#DCEFED; --accent-ink:#FFFFFF; --accent-edge:#0B7A74; --label-no:#DCEFED;
@@ -285,15 +288,13 @@ body::before { content:""; position:fixed; inset:0 0 auto; height:env(safe-area-
 .emptyhero { display:grid; justify-items:center; text-align:center; gap:var(--s3); padding:var(--s6) 0 var(--s4); }
 .emptyhero p { margin:0; color:var(--muted); max-width:32ch; }
 .emptyhero.small { padding:var(--s4) 0; }
-.footnote { color:var(--muted); font-size:calc(13*var(--u)); margin:var(--s2) 0 var(--s6); }
 
 .stack { display:grid; gap:var(--s4); }
 .two { display:grid; grid-template-columns:1fr 1fr; gap:var(--s3); }
 .two > * { min-width:0; }
 .field > span { color:var(--muted); }
-.field input, .field select, .field textarea { width:100%; min-width:0; }
-.field textarea { font:calc(13*var(--u))/1.5 var(--font-label); padding:10px var(--s3); background:var(--surface); color:var(--ink); border:1px solid var(--line); border-bottom:2px solid var(--ink); border-radius:var(--r-control-s) var(--r-control-s) 0 0; min-height:110px; }
-.field select:focus, .field textarea:focus { outline:none; border-bottom-color:var(--accent-text); }
+.field input, .field select { width:100%; min-width:0; }
+.field select:focus { outline:none; border-bottom-color:var(--accent-text); }
 .actions { display:flex; flex-wrap:wrap; gap:var(--s2); }
 .actions .btn { flex:1; justify-content:center; }
 .btn.danger { border-color:var(--err); color:var(--err); }

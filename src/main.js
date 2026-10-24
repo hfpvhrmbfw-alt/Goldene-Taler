@@ -35,7 +35,7 @@ const view = {
 for (const k of Object.keys(view.folds)) {
   try { view.folds[k] = localStorage.getItem(`taler:${k}`) !== 'zu'; } catch { /* egal */ }
 }
-const info = { lastImport: null, lastBackup: null, reviewDismissed: null, storageKind: 'indexeddb', standalone: false, version: '' };
+const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false };
 
 // ---------- Speichern ----------
 async function saveTransactions(list) { await db.putTransactions(list); }
@@ -629,7 +629,6 @@ function bind() {
     if (act === 'edit-rule') openRuleEditor(b.dataset.id);
     if (act === 'new-rule') openRuleEditor(null);
     if (act === 'restore-std') await restoreDefaultRules();
-    if (act === 'import-text') await importLog($('#log-text').value);
     if (act === 'demo') await importLog(demoLog(), { demo: true });
     if (act === 'demo-remove') await removeDemo();
     if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
@@ -749,8 +748,13 @@ function bind() {
 
 // ---------- Start ----------
 async function start() {
-  db = await open();
-  info.storageKind = db.kind === 'indexeddb' ? 'IndexedDB' : 'localStorage';
+  try {
+    db = await open();
+  } catch {
+    // Ohne Speicher wäre jede Eingabe beim Schließen verloren, also lieber gar nicht erst starten.
+    $('#view-overview').innerHTML = '<div class="note err"><span class="cap">kein speicher</span>Taler kann auf diesem Gerät nichts speichern. Ist das ein privates Fenster? Dann Taler normal in Safari oder vom Home-Bildschirm öffnen.</div>';
+    return;
+  }
   info.standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   state.transactions = sortTransactions((await db.allTransactions()).map(sanitizeTransaction).filter(Boolean));
   state.settings = sanitizeSettings(await db.getMeta('settings'));

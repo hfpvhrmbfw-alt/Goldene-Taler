@@ -2,7 +2,7 @@
 
 Eigener Ersatz für Tael: Ein Kurzbefehl schreibt jede Apple-Pay-Zahlung in eine Textdatei in iCloud Drive,
 diese Web-App liest die Datei ein, ordnet Zahlungen über Regeln Kategorien zu und zeigt Monatsübersichten.
-Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking. Gestaltet im Stil Castra · Blei (minimalistisch, mobil zuerst).
+Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking, auch die Schriften (Asap, Chivo Mono, SIL OFL) liegen in `fonts/`. Gestaltet im Stil Castra · Blei (minimalistisch, mobil zuerst).
 
 ## Nutzung
 
@@ -40,6 +40,8 @@ Eine Zeile pro Zahlung, Felder mit Semikolon getrennt:
 ```
 
 Datum (ISO 8601 oder `20.10.26, 18:55`) · Betrag (deutsch oder englisch, Währung optional, `-` = Erstattung) · Händler · Karte.
+Der Kurzbefehl schreibt heute die Wallet-Mitteilung (`Datum;Titel;Untertitel;Text`); Taler sucht den Betrag in allen Feldern.
+Ein Semikolon im Händlernamen trennt ihn, dann zählt nur der Teil davor.
 Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wiederholbar.
 
 ## Aufbau
@@ -51,7 +53,7 @@ Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wie
 | `src/statement.js` | Reine Logik: Kontoauszüge (Textstücke mit Position) von Trade Republic und ING lesen |
 | `src/pdf.js` | Adapter zu pdf.js (`vendor/pdfjs`, Apache-2.0), wird erst beim ersten PDF geladen |
 | `src/catalog.js` | Startregeln für häufige Händler (vom Assistenten zusammengestellt, ohne Gewähr) |
-| `src/storage.js` | IndexedDB mit localStorage-Fallback |
+| `src/storage.js` | IndexedDB |
 | `src/texts.js` | Beschriftungen und Meldungen |
 | `src/ui.js`, `src/main.js` | Oberfläche, Ereignisse, einzige Stelle mit Uhrzeit |
 

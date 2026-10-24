@@ -78,10 +78,8 @@ const AMOUNT_FIELD_RE = new RegExp(`^(?:${CUR}\\s*${NUM}|${NUM}\\s*${CUR}|[-−]
 const AMOUNT_IN_TEXT_RE = new RegExp(`${CUR}\\s*${NUM}|${NUM}\\s*${CUR}`);
 
 /**
- * Eine Zeile aus der Kurzbefehl-Datei: "Datum;Betrag;Händler;Karte".
- * Steht der Betrag nicht im zweiten Feld (andere Bank, Felder vertauscht, Mitteilungstext),
- * wird er in den übrigen Feldern gesucht; dann gilt das erste übrige Feld als Händler, das letzte als Karte.
- * Enthält der Händlername selbst ein Semikolon, bleibt er im Normalfall ganz (alles zwischen Betrag und Karte).
+ * Eine Zeile aus der Kurzbefehl-Datei: "Datum;Titel;Untertitel;Text" (Wallet-Mitteilung) oder alt "Datum;Betrag;Händler;Karte".
+ * Der Betrag wird in den Feldern nach dem Datum gesucht; das erste übrige Feld gilt als Händler, das letzte als Karte.
  * @param {string} line
  * @returns {{ok: true, date: string, time: string|null, amountCents: number, currency: string|null, merchant: string, card: string}
  *          | {ok: false, error: 'empty'|'fields'|'date'|'amount'}}
@@ -93,14 +91,6 @@ export function parseLogLine(line) {
   if (parts.length < 3) return { ok: false, error: 'fields' };
   const dt = parseDateTime(parts[0]);
   if (!dt) return { ok: false, error: 'date' };
-
-  if (AMOUNT_FIELD_RE.test(parts[1].replace(/\s+/g, ' '))) {
-    const amount = parseAmount(parts[1]);
-    const card = parts.length >= 4 ? parts[parts.length - 1] : '';
-    const merchant = (parts.length >= 4 ? parts.slice(2, -1) : parts.slice(2)).join(';');
-    return { ok: true, ...dt, amountCents: amount.cents, currency: amount.currency, merchant, card };
-  }
-
   const rest = parts.slice(1);
   let idx = rest.findIndex((p) => AMOUNT_FIELD_RE.test(p.replace(/\s+/g, ' ')));
   let amountText = idx >= 0 ? rest[idx] : null;
@@ -264,8 +254,7 @@ export function previousMonth(month) {
 /** Tage im Monat "YYYY-MM" (Kalenderrechnung, ohne Uhr und Zeitzone). */
 export function daysInMonth(month) {
   const [y, m] = month.split('-').map(Number);
-  if (m === 2) return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28;
-  return [4, 6, 9, 11].includes(m) ? 30 : 31;
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
 }
 
 /**

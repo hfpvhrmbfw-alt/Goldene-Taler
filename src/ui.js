@@ -44,13 +44,8 @@ export const catLabel = (id) => (id ? CATEGORY_LABELS[id] || id : UNCATEGORIZED)
 export const monthLabel = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
 const monthName = (m) => MONTHS[Number(m.slice(5, 7)) - 1];
 
-/** Wochentag aus YYYY-MM-DD ohne Zeitzone (Zeller-Variante nach Sakamoto). */
-function weekday(date) {
-  let [y, m, d] = date.split('-').map(Number);
-  const t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-  if (m < 3) y -= 1;
-  return (y + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400) + t[m - 1] + d) % 7;
-}
+/** Wochentag aus YYYY-MM-DD, in UTC gerechnet, damit die Zeitzone nichts verschiebt. */
+const weekday = (date) => new Date(`${date}T00:00:00Z`).getUTCDay();
 export function dayLabel(date, today, yesterday) {
   if (date === today) return 'Heute';
   if (date === yesterday) return 'Gestern';
@@ -94,7 +89,6 @@ function importRow(info, today) {
   const last = info.lastImport;
   let sub = 'iCloud Drive › Shortcuts › ausgaben.txt';
   if (last?.at) sub = `zuletzt ${sinceLabel(last.at, today)}${last.time && last.at === today ? `, ${last.time}` : ''} · ${last.added} neu`;
-  else if (last?.when) sub = `zuletzt ${String(last.when).toLowerCase()} · ${last.added} neu`;
   return `<li><label class="item action" for="log-file"><span class="t"><b>Neue Zahlungen einlesen</b><span>${esc(sub)}</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
 }
 
@@ -235,7 +229,7 @@ function curveBlock(state, view, clock, s) {
   if (budget) legend.push(`<span class="lg bud">Budget</span>`);
   const label = `Verlauf ${monthLabel(view.month)}: ${money(c.current[last], cur)} bis zum ${last + 1}.${prev ? `, ${prevName} am selben Tag ${money(prev[Math.min(last, prev.length - 1)], cur)}` : ''}`;
   return `${head('verlauf')}
-  <figure class="curve" data-cur="${c.current.join(',')}" data-prev="${prev ? prev.join(',') : ''}" data-days="${c.days}" data-pdays="${c.previousDays}"
+  <figure class="curve" data-cur="${c.current.join(',')}" data-prev="${prev ? prev.join(',') : ''}" data-days="${c.days}"
     data-name="${esc(monthName(view.month))}" data-pname="${esc(prevName)}" data-currency="${esc(cur)}">
     <p class="readout" aria-live="polite"></p>
     <div class="plot">
@@ -396,7 +390,6 @@ export function renderSettings(el, state, view, info, clock) {
   <ul class="list">
     ${importRow(info, clock.today)}
     ${statementRow()}
-    ${backupDue(state, info, clock.today) ? item({ tag: 'button', cls: 'open', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, chev: true }) : ''}
   </ul>
 
   ${head(`monatsbudget (${esc(cur)})`)}
@@ -424,18 +417,10 @@ export function renderSettings(el, state, view, info, clock) {
     <p class="muted">Mitteilungen ohne Betrag (Bordkarten, Tickets) landen auch in der Datei. Taler überspringt sie still.</p>
     <div class="note info"><span class="cap">hinweis</span>iOS lässt Kurzbefehle nicht direkt in den Speicher einer Web-App schreiben, deshalb der Weg über die Datei.</div>
   </div></details>
-  <details><summary>zeilen einfügen</summary><div class="stack">
-    <label class="field"><span class="cap">zeilen</span><textarea id="log-text" placeholder="2026-10-20T18:55:41+02:00;REWE Markt;;42,17 € mit Visa"></textarea></label>
-    <button class="btn" data-act="import-text">einlesen</button></div></details>
-
-  <details><summary>kontoauszug: was übernommen wird</summary><div>
-  <p class="muted">Übernimmt Kartenzahlungen und Lastschriften, keine Überweisungen, Daueraufträge oder Wertpapiere.
-    Was der Kurzbefehl schon per Apple Pay erfasst hat (gleicher Betrag, Datum bis fünf Tage später), kommt nicht doppelt.
-    Das PDF wird nur hier im Browser gelesen und nicht gespeichert.</p></div></details>
 
   ${head('sicherung')}
   <ul class="list">
-    ${item({ tag: 'button', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: backupLabel(info, clock.today), n: 'json' })}
+    ${item({ tag: 'button', cls: backupDue(state, info, clock.today) ? 'open' : '', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, n: 'json' })}
     ${item({ tag: 'button', attrs: 'data-act="export-csv"', title: 'Tabelle für Numbers oder Excel', n: 'csv' })}
     <li><label class="item" for="backup-file"><span class="t"><b>Sicherung laden</b><span>ersetzt den aktuellen Stand</span></span><span class="chev" aria-hidden="true">›</span></label></li>
   </ul>
@@ -447,8 +432,7 @@ export function renderSettings(el, state, view, info, clock) {
       ? item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true })
       : item({ tag: 'button', attrs: 'data-act="demo"', title: 'Beispieldaten laden', sub: 'zum Ausprobieren, getrennt entfernbar', chev: true })}
     ${item({ tag: 'button', cls: 'danger', attrs: 'data-act="reset"', title: 'Alles löschen', sub: 'Buchungen, Regeln und Budget', chev: true })}
-  </ul>
-  <p class="footnote">Speicher: ${esc(info.storageKind)}${info.version ? ` · ${esc(info.version)}` : ''}</p>`;
+  </ul>`;
 }
 
 /** Regeln: eigene oben, Vorgaben eingeklappt, gelöschte Vorgaben wiederherstellbar. */
