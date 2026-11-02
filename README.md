@@ -52,8 +52,14 @@ weitere Namen (eigener Name, IBAN) bleiben in den Einstellungen.
 **Depots**: Aktien, ETFs und Fonds mit Stück, Kaufwert und Kurs eintragen; der Wert des Depots ist dann die Summe der
 Positionen, mit Gewinn oder Verlust seit Kauf. Sparplan-Ausführungen aus dem Kontoauszug (gleiche ISIN) zählen künftig
 zu Kaufwert und Stück dazu, wenn die Zeile die Stückzahl nennt (Trade Republic: „quantity“). Sparpläne ohne Position
-stehen im Depot zum Eintragen bereit. Kurse holt Taler nicht aus dem Netz, sie stehen mit Datum da und lassen sich für
-alle Positionen auf einer Seite aktualisieren. Ein Depot ohne Positionen hat einen Wert von Hand.
+stehen im Depot zum Eintragen bereit. Ein Depot ohne Positionen hat einen Wert von Hand.
+
+**Kurse aus dem Netz**: Mit einem kostenlosen Schlüssel von [EODHD](https://eodhd.com/register) (Einstellungen →
+„kurse aus dem netz“) holt Taler einmal am Tag beim Öffnen die Schlusskurse aller Positionen mit ISIN, bevorzugt von Xetra,
+nur in der App-Währung. Ins Netz geht nur die ISIN, nie ein Betrag; der Schlüssel bleibt auf dem Gerät und steht nicht
+in der Sicherung. Gratis sind 20 Abrufe am Tag, einer je Wertpapier. Ohne Schlüssel, für Positionen ohne ISIN oder wenn
+der Abruf scheitert, gehen Kurse wie bisher von Hand (alle Positionen auf einer Seite); ein neuerer Kurs von Hand wird
+nicht überschrieben.
 
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
@@ -78,6 +84,7 @@ Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wie
 | `src/model.js` | Datenmodell, Kategorie-IDs, Validierung, Export/Import, Migration |
 | `src/logic.js` | Reine Logik: Zeilen lesen, Beträge parsen, Regeln, Monatsauswertung |
 | `src/accounts.js` | Reine Logik: Konto einer Buchung, Kontostände, Vermögen, Geldfluss, frei für den Monat |
+| `src/prices.js` | Reine Logik für Kurse aus dem Netz: Adresse, passender Kurs je ISIN, Eintragen |
 | `src/statement.js` | Reine Logik: Kontoauszüge (Textstücke mit Position) von Trade Republic und ING lesen |
 | `src/pdf.js` | Adapter zu pdf.js (`vendor/pdfjs`, Apache-2.0), wird erst beim ersten PDF geladen |
 | `src/catalog.js` | Startregeln für häufige Händler (vom Assistenten zusammengestellt, ohne Gewähr) |

@@ -10,6 +10,7 @@ import {
   categoryKind, mergeCategory, isOwnAccountMove, transfersIn,
 } from './logic.js';
 import { parseStatement } from './statement.js';
+import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind } from './prices.js';
 import { pdfPages } from './pdf.js';
 import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
@@ -38,7 +39,7 @@ const view = {
 for (const k of Object.keys(view.folds)) {
   try { view.folds[k] = localStorage.getItem(`taler:${k}`) !== 'zu'; } catch { /* egal */ }
 }
-const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false };
+const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false, priceKey: null, priceFetch: null, fetchingPrices: false };
 
 // ---------- Speichern ----------
 /** Kategorienliste setzen: Zustand und Oberfläche kennen dieselbe Liste. */
@@ -109,7 +110,7 @@ function render() {
   if (view.tab === 'rules') ui.renderRules(el, state);
   if (view.tab === 'categories') ui.renderCategories(el, state);
   if (view.tab === 'accounts') ui.renderAccounts(el, state, view, c);
-  if (view.tab === 'account') ui.renderAccount(el, state, view, c);
+  if (view.tab === 'account') ui.renderAccount(el, state, view, c, info);
   document.title = `Taler · ${TABS[view.tab]}`;
   $('#add-btn').hidden = !(view.tab === 'overview' || view.tab === 'list');
   const back = view.tab === 'rules' || view.tab === 'categories' ? ['settings', 'einstellungen']
@@ -1039,6 +1040,70 @@ function openPrices(accountId) {
   openSheet($('#prices-dialog'));
 }
 
+// ---------- Kurse aus dem Netz ----------
+const PRICE_ERRORS = {
+  key: 'Kurse: Der Schlüssel stimmt nicht. Bitte in den Einstellungen prüfen.',
+  limit: 'Kurse: Für heute sind die kostenlosen Abrufe aufgebraucht. Morgen geht es wieder.',
+  net: 'Kurse: Gerade nicht erreichbar. Später noch einmal versuchen.',
+};
+
+/** Holt die Schlusskurse aller Positionen mit ISIN. still = automatisch beim Start, dann nur bei Änderungen ein Hinweis. */
+async function fetchPrices({ quiet = false } = {}) {
+  const isins = isinsToFetch(state.positions);
+  if (!info.priceKey || !isins.length || info.fetchingPrices) return;
+  info.fetchingPrices = true;
+  if (!quiet) { render(); toast('Kurse werden geholt …'); }
+  const quotes = new Map();
+  const missing = [];
+  let failure = null;
+  for (const isin of isins) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(searchUrl(isin, info.priceKey), { signal: ctrl.signal, cache: 'no-store' });
+      if (!res.ok) { failure = failureKind(res.status); break; }
+      const q = pickQuote(await res.json(), isin, state.settings.currency);
+      if (q) quotes.set(isin, q); else missing.push(isin);
+    } catch {
+      failure = 'net';
+      break;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  info.fetchingPrices = false;
+  info.priceFetch = { date: clock().today, ok: !failure };
+  await db.setMeta('priceFetch', info.priceFetch);
+  const { positions, changed } = applyQuotes(state.positions, quotes);
+  if (changed) {
+    state.positions = positions;
+    await savePositions();
+  }
+  render();
+  if (failure && (!quiet || failure === 'key')) { toast(PRICE_ERRORS[failure]); return; }
+  if (quiet && !changed) return;
+  const names = missing.map((i) => state.positions.find((p) => p.isin === i)?.name || i);
+  const msg = changed ? `${changed} ${changed === 1 ? 'Kurs' : 'Kurse'} aus dem Netz geholt` : 'Kurse sind schon aktuell';
+  toast(names.length ? `${msg}. Ohne Kurs in ${state.settings.currency}: ${names.join(', ')}` : msg);
+}
+
+/** Einmal am Tag von selbst, wenn ein Schlüssel da ist. */
+function pricesDue() {
+  return !!info.priceKey && info.priceFetch?.date !== clock().today && isinsToFetch(state.positions).length > 0;
+}
+
+async function savePriceKey(key) {
+  info.priceKey = key || null;
+  info.priceFetch = null;
+  await db.setMeta('priceKey', info.priceKey);
+  await db.setMeta('priceFetch', null);
+  render();
+  if (info.priceKey) {
+    if (isinsToFetch(state.positions).length) await fetchPrices();
+    else toast('Schlüssel gespeichert');
+  } else toast('Schlüssel entfernt, Kurse wieder von Hand');
+}
+
 async function savePrices() {
   const f = $('#prices-form');
   const date = f.date.value || clock().today;
@@ -1166,6 +1231,9 @@ function bind() {
     if (act === 'new-position') openPositionEditor(null, { accountId: b.dataset.account, isin: b.dataset.isin || '', name: b.dataset.name || '' });
     if (act === 'edit-position') openPositionEditor(b.dataset.id);
     if (act === 'edit-prices') openPrices(b.dataset.id);
+    if (act === 'fetch-prices') fetchPrices();
+    if (act === 'goto-prices') { selectTab('settings'); $('#price-key')?.scrollIntoView({ block: 'center' }); }
+    if (act === 'remove-price-key') savePriceKey(null);
     if (act === 'clear-account') { view.listAccount = null; if (view.from === 'account') view.from = null; render(); }
     if (act === 'sort') openSorter();
     if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
@@ -1196,6 +1264,8 @@ function bind() {
       await db.setMeta('initialized', true);
       info.lastImport = null;
       info.lastBackup = null;
+      info.priceKey = null;
+      info.priceFetch = null;
       view.importReport = '';
       render();
       toast('Alles gelöscht');
@@ -1303,6 +1373,12 @@ function bind() {
       const n = await applyTransfers();
       render();
       undoable(`„${name}“ hinzugefügt${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
+    }
+    if (e.target.id === 'price-key-form') {
+      e.preventDefault();
+      const key = e.target.key.value.trim();
+      if (!/^[\w.-]{8,80}$/.test(key)) { toast('Bitte den Schlüssel von EODHD vollständig einfügen'); return; }
+      await savePriceKey(key);
     }
     if (e.target.id === 'budget-form') {
       e.preventDefault();
@@ -1413,6 +1489,8 @@ async function start() {
   info.lastImport = await db.getMeta('lastImport');
   info.lastBackup = await db.getMeta('lastBackup');
   info.reviewDismissed = await db.getMeta('reviewDismissed');
+  info.priceKey = await db.getMeta('priceKey');
+  info.priceFetch = await db.getMeta('priceFetch');
   if (!(await db.getMeta('initialized'))) {
     await db.putRules(DEFAULT_RULES);
     await db.setMeta('initialized', true);
@@ -1441,6 +1519,8 @@ async function start() {
     await db.setMeta('transferScan', 1);
     if (n) { render(); undoable(`${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen zwischen deinen Konten`, snap); }
   }
+  if (pricesDue()) fetchPrices({ quiet: true });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && pricesDue()) fetchPrices({ quiet: true }); });
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;
