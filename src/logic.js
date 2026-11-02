@@ -182,7 +182,7 @@ export function categorize(merchant, rules) {
 
 /** Wendet Regeln auf alle Buchungen an, deren Kategorie nicht von Hand gesetzt wurde. */
 export function applyRules(transactions, rules) {
-  return transactions.map((t) => (t.manualCategory ? t : { ...t, categoryId: categorize(t.merchant, rules) }));
+  return transactions.map((t) => (t.manualCategory || kindOf(t) !== 'expense' ? t : { ...t, categoryId: categorize(t.merchant, rules) }));
 }
 
 /**
@@ -205,8 +205,28 @@ export function sortTransactions(transactions) {
     || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-/** Zählt eine Buchung in Summen mit? Von Hand ausgenommene (z. B. für andere ausgelegt) nicht. */
-export const counts = (t) => !t.excluded;
+/** Art einer Buchung; ältere Daten ohne Angabe sind Ausgaben. */
+export const kindOf = (t) => t.kind || 'expense';
+
+/** Zählt eine Buchung bei den Ausgaben mit? Von Hand ausgenommene (z. B. für andere ausgelegt) nicht, Einnahmen, Sparen und Umbuchungen auch nicht. */
+export const counts = (t) => !t.excluded && kindOf(t) === 'expense';
+
+/** Braucht die Buchung eine Kategorie? Nur Ausgaben, die mitzählen. */
+export const needsCategory = (t) => counts(t) && !t.categoryId;
+
+/** Summe in der Hauptwährung für Buchungen einer Art, ohne ausgenommene. Geld, das reinkam, steht positiv (Einnahmen). */
+function kindTotal(list, kind, currency) {
+  let cents = 0;
+  let count = 0;
+  for (const t of list) {
+    if (t.excluded || kindOf(t) !== kind) continue;
+    const v = baseAmount(t, currency);
+    if (v === null) continue;
+    cents += kind === 'income' ? -v : v;
+    count += 1;
+  }
+  return { cents, count };
+}
 
 /**
  * Betrag in der Hauptwährung: bei gleicher Währung der Betrag selbst, bei Fremdwährung der von Hand
@@ -270,6 +290,9 @@ export function daysInMonth(month) {
  * @property {{currency: string, cents: number, count: number}[]} foreign  Fremdwährung ohne Euro-Betrag, in keiner Summe
  * @property {number|null} budgetLeftCents
  * @property {number|null} budgetShare  Anteil verbraucht, 0..n
+ * @property {number} incomeCents      Einnahmen des Monats (positiv)
+ * @property {number} savingCents      Sparpläne des Monats
+ * @property {number} balanceCents     Einnahmen − Ausgaben − Sparen
  * @property {number} dailyAverageCents bezogen auf vergangene Tage (laufender Monat) bzw. alle Tage
  * @property {{categoryId: string|null, cents: number, count: number, share: number}[]} byCategory  größte zuerst
  * @property {{merchant: string, cents: number, count: number}[]} topMerchants  max. 5
@@ -295,6 +318,9 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
   const previousToDateCents = comparedToDay === null ? previousCents
     : inPrev.filter((t) => Number(t.date.slice(8, 10)) <= comparedToDay).reduce((s, t) => s + baseAmount(t, currency), 0);
   const foreign = foreignOf(counted, currency);
+  const monthAll = transactions.filter((t) => monthOf(t.date) === month);
+  const incomeCents = kindTotal(monthAll, 'income', currency).cents;
+  const savingCents = kindTotal(monthAll, 'saving', currency).cents;
 
   const order = [...CATEGORY_IDS, null];
   const byCat = new Map();
@@ -334,6 +360,9 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
     previousToDateCents,
     monthProgress: elapsed / total,
     foreign,
+    incomeCents,
+    savingCents,
+    balanceCents: incomeCents - spentCents - savingCents,
     budgetLeftCents: budgetCents ? budgetCents - spentCents : null,
     budgetShare: budgetCents ? spentCents / budgetCents : null,
     dailyAverageCents: elapsed > 0 ? Math.round(spentCents / elapsed) : 0,
@@ -397,24 +426,36 @@ export function ruleDefault(transactions, pattern) {
  * Buchungen nach Tag gruppiert, für die Liste (neueste zuerst).
  * @param {import('./model.js').Transaction[]} transactions
  * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null, currency?: string}} filter
- *   categoryId: undefined = alle, null = ohne Kategorie
- * @returns {{date: string, totalCents: number, foreign: {currency: string, cents: number, count: number}[], items: import('./model.js').Transaction[]}[]}
- *   totalCents in der Hauptwährung, ohne ausgenommene; Fremdwährung ohne Euro-Betrag in `foreign`
+ *   categoryId: undefined = alle, null = ohne Kategorie; categoryIds: mehrere (leer = alle)
+ *   kind: Art; sources: Quellen; hideExcluded; sort: 'new' (Standard) | 'old' | 'big' (größter Betrag, ohne Tage)
+ * @returns {{date: string|null, totalCents: number, incomeCents: number, foreign: {currency: string, cents: number, count: number}[], items: import('./model.js').Transaction[]}[]}
+ *   totalCents = Ausgaben in der Hauptwährung ohne ausgenommene, incomeCents = Einnahmen (positiv);
+ *   Fremdwährung ohne Euro-Betrag in `foreign`
  */
 export function groupByDay(transactions, filter = {}) {
   const q = (filter.query || '').trim().toLowerCase();
+  const cats = filter.categoryIds || (filter.categoryId === undefined ? null : [filter.categoryId]);
+  const cur = filter.currency || 'EUR';
   const list = sortTransactions(transactions).filter((t) =>
     (!filter.month || monthOf(t.date) === filter.month)
-    && (filter.categoryId === undefined || t.categoryId === filter.categoryId)
+    && (!filter.kind || kindOf(t) === filter.kind)
+    && (!cats || !cats.length || cats.includes(t.categoryId))
+    && (!filter.sources || !filter.sources.length || filter.sources.includes(t.source))
+    && (!filter.hideExcluded || !t.excluded)
     && (!filter.merchant || t.merchant === filter.merchant)
     && (!q || t.merchant.toLowerCase().includes(q) || t.note.toLowerCase().includes(q)));
-  const cur = filter.currency || 'EUR';
+  const sort = filter.sort || 'new';
+  if (sort === 'old') list.reverse();
+  if (sort === 'big') list.sort((a, b) => Math.abs(baseAmount(b, cur) ?? 0) - Math.abs(baseAmount(a, cur) ?? 0));
   const groups = [];
   for (const t of list) {
     let g = groups[groups.length - 1];
-    if (!g || g.date !== t.date) { g = { date: t.date, totalCents: 0, items: [] }; groups.push(g); }
+    // Nach Betrag sortiert gibt es keine Tage mehr: eine einzige Gruppe ohne Datum.
+    const date = sort === 'big' ? null : t.date;
+    if (!g || g.date !== date) { g = { date, totalCents: 0, incomeCents: 0, items: [] }; groups.push(g); }
     g.items.push(t);
     if (counts(t)) g.totalCents += baseAmount(t, cur) ?? 0;
+    else if (!t.excluded && kindOf(t) === 'income') g.incomeCents += -(baseAmount(t, cur) ?? 0);
   }
   for (const g of groups) g.foreign = foreignOf(g.items.filter(counts), cur);
   return groups;
@@ -474,11 +515,11 @@ export function findCrossDuplicates(existing, incoming) {
   const dupes = new Set();
   for (const t of incoming) {
     const want = other[t.source];
-    if (!want) continue;
+    if (!want || kindOf(t) !== 'expense') continue;
     let best = null;
     let bestDist = Infinity;
     for (const e of existing) {
-      if (e.source !== want || taken.has(e.id) || e.amountCents !== t.amountCents || e.currency !== t.currency) continue;
+      if (e.source !== want || kindOf(e) !== 'expense' || taken.has(e.id) || e.amountCents !== t.amountCents || e.currency !== t.currency) continue;
       const shortcutDate = want === 'shortcut' ? e.date : t.date;
       const statementDate = want === 'shortcut' ? t.date : e.date;
       const d = daysBetween(shortcutDate, statementDate);
@@ -491,13 +532,44 @@ export function findCrossDuplicates(existing, incoming) {
 }
 
 /**
+ * Umbuchungen zwischen eigenen Konten: Auf einem Konto geht Geld raus, auf einem anderen kommt derselbe Betrag
+ * höchstens drei Tage später oder früher rein. Gepaart werden nur Buchungen aus Kontoauszügen von verschiedenen Konten
+ * (Spalte `card`), je Buchung höchstens ein Partner, das nächste Datum gewinnt. Beide Seiten werden Umbuchungen.
+ * Bereits bekannte Buchungen kommen nur als Partner infrage, nicht neu in `incoming`.
+ * @param {import('./model.js').Transaction[]} existing
+ * @param {import('./model.js').Transaction[]} incoming  neue Buchungen
+ * @returns {Set<string>} IDs aus existing und incoming, die Umbuchungen sind
+ */
+export function findTransfers(existing, incoming) {
+  const open = (t) => t.source === 'statement' && !t.excluded && (kindOf(t) === 'expense' || kindOf(t) === 'income');
+  const pool = [...existing.filter(open), ...incoming.filter(open)];
+  const fresh = new Set(incoming.map((t) => t.id));
+  const pairs = [];
+  for (const a of pool) {
+    if (!fresh.has(a.id)) continue;
+    for (const b of pool) {
+      if (b.card === a.card || b.currency !== a.currency || b.amountCents !== -a.amountCents) continue;
+      const d = Math.abs(daysBetween(a.date, b.date));
+      if (d <= 3) pairs.push({ d, a, b });
+    }
+  }
+  const used = new Set();
+  const hits = new Set();
+  for (const { a, b } of pairs.sort((x, y) => x.d - y.d)) {
+    if (used.has(a.id) || used.has(b.id)) continue;
+    used.add(a.id); used.add(b.id); hits.add(a.id); hits.add(b.id);
+  }
+  return hits;
+}
+
+/**
  * Ein Kalenderjahr in zwölf Monaten, für den Jahresblick.
  * Der Durchschnitt zählt nur abgeschlossene Monate ab dem ersten mit Daten; der Vorjahresvergleich
  * reicht im laufenden Jahr nur bis zum heutigen Tag und fehlt (null), solange das Vorjahr nicht ab Januar erfasst ist.
  * @param {import('./model.js').Transaction[]} transactions
  * @param {string} year   YYYY
  * @param {string} today  YYYY-MM-DD
- * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number,
+ * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number, incomeCents: number, savingCents: number,
  *   averageCents: number|null, maxCents: number, previousCents: number|null, comparedTo: string|null}}
  */
 export function yearSummary(transactions, year, today, currency = 'EUR') {
@@ -507,6 +579,9 @@ export function yearSummary(transactions, year, today, currency = 'EUR') {
   const cutoff = year === thisYear ? today.slice(5) : null;
   // Vorjahresvergleich nur, wenn das Vorjahr ab Januar erfasst ist.
   let previousCents = trackedBefore(transactions, `${prevYear}-01`) ? 0 : null;
+  const inYear = transactions.filter((t) => t.date.startsWith(year));
+  const incomeCents = kindTotal(inYear, 'income', currency).cents;
+  const savingCents = kindTotal(inYear, 'saving', currency).cents;
   for (const t of transactions) {
     const v = counts(t) ? baseAmount(t, currency) : null;
     if (v === null) continue;
@@ -524,7 +599,7 @@ export function yearSummary(transactions, year, today, currency = 'EUR') {
   const lastDone = year < thisYear ? 11 : year === thisYear ? Number(today.slice(5, 7)) - 2 : -1;
   const done = first >= 0 && lastDone >= first ? months.slice(first, lastDone + 1) : [];
   return {
-    year, months, totalCents,
+    year, months, totalCents, incomeCents, savingCents,
     averageCents: done.length ? Math.round(done.reduce((s, m) => s + m.cents, 0) / done.length) : null,
     maxCents: Math.max(0, ...months.map((m) => m.cents)),
     previousCents,

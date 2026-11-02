@@ -16,7 +16,7 @@ import { hashString, parseAmount } from './logic.js';
  * @property {string} type        Buchungsart, wie sie im Auszug steht ("Kartentransaktion", "Lastschrift")
  * @property {string} merchant
  * @property {number} cents       positiv = Geld ging raus, negativ = Geld kam rein
- * @property {boolean} expense    zählt als Ausgabe (Karte, Lastschrift) oder als Erstattung dazu
+ * @property {'expense'|'income'|'saving'|'transfer'} kind  siehe model.js
  * @property {string} card
  * @property {string} key         stabiler Inhalt für die ID
  */
@@ -49,6 +49,13 @@ export function detectBank(pages) {
 // ---------- Trade Republic ----------
 
 const TR_AMOUNT = /^-?\d{1,3}(?:\.\d{3})*,\d{2}\s?€$/;
+/** Art einer Trade-Republic-Zeile. Karte und Lastschrift sind Ausgaben, Handel (Sparplan) ist Sparen, der Rest richtet sich nach der Richtung. */
+function trKind(type, desc, cents) {
+  if (/karte|card|lastschrift/i.test(type)) return 'expense';
+  if (/handel|sparplan|savings plan|wertpapier/i.test(`${type} ${desc}`)) return cents > 0 ? 'saving' : 'transfer';
+  return cents > 0 ? 'expense' : 'income';
+}
+
 const isHeading = (s) => /^[A-ZÄÖÜ][A-ZÄÖÜ ]{7,}$/.test(s);
 
 /**
@@ -144,7 +151,7 @@ export function parseTradeRepublic(pages) {
     const cents = dir === 'out' ? r.a : -r.a;
     rows.push({
       date: r.date, type: r.type, merchant: r.desc, cents,
-      expense: /karte|card|lastschrift/i.test(r.type),
+      kind: trKind(r.type, r.desc, cents),
       card: 'Trade Republic',
       key: `tr|${r.date}|${r.type}|${r.desc}|${cents}|${r.s}`,
     });
@@ -157,6 +164,9 @@ export function parseTradeRepublic(pages) {
 const ING_AMOUNT = /^-?\d{1,3}(?:\.\d{3})*,\d{2}$/;
 const DATE_DE = /^(\d{2})\.(\d{2})\.(\d{4})$/;
 const loose = (word) => word.split('').join('\\s?');
+/** Art einer ING-Zeile. Lastschriften und Visa-Gutschriften (Erstattungen) sind Ausgaben, sonst entscheidet die Richtung. */
+const ingKind = (type, visa, cents) => (/^lastschrift/i.test(type) || (visa && /gutschrift/i.test(type)) || cents > 0 ? 'expense' : 'income');
+
 const PAYPAL_SHOP = new RegExp(`${loose('Einkauf')}\\s+${loose('bei')}\\s+(.*?)\\s*(?:Mandat:|Referenz:|$)`, 'i');
 
 /**
@@ -218,7 +228,7 @@ export function parseIng(pages) {
     const cents = -parsed.cents;
     rows.push({
       date, type, merchant, cents,
-      expense: /^lastschrift/i.test(type) || (visa && /gutschrift/i.test(type)),
+      kind: ingKind(type, visa, cents),
       card: visa ? 'ING Visa' : 'ING',
       key: `ing|${r.booking}|${r.valuta || ''}|${type}|${name}|${vz}|${cents}`,
     });
@@ -229,12 +239,13 @@ export function parseIng(pages) {
 // ---------- gemeinsam ----------
 
 /**
- * Liest einen Auszug und macht aus Kartenzahlungen und Lastschriften Buchungen.
- * Überweisungen, Daueraufträge, Gutschriften, Zinsen und Wertpapiere zählen nicht als Ausgabe und werden nur gezählt.
+ * Liest einen Auszug und macht aus jeder Zeile eine Buchung, mit Art (Ausgabe, Einnahme, Sparen).
+ * Umbuchungen zwischen eigenen Konten erkennt erst `findTransfers`, weil dazu der andere Auszug nötig ist.
+ * Zeilen über 0,00 € (z. B. Zinsen ohne Betrag) fallen weg und stehen in `ignored`.
  * IDs entstehen aus dem Inhalt der Zeile: Dieselbe Datei (oder ein überlappender Zeitraum) legt nichts doppelt an.
  * @param {PdfPage[]} pages
  * @param {string} currency
- * @returns {{ok: true, bank: 'traderepublic'|'ing', transactions: import('./model.js').Transaction[], other: number, errors: number}
+ * @returns {{ok: true, bank: 'traderepublic'|'ing', transactions: import('./model.js').Transaction[], ignored: number, errors: number}
  *          | {ok: false, error: 'unknown'|'empty'}}
  */
 export function parseStatement(pages, currency = 'EUR') {
@@ -245,7 +256,7 @@ export function parseStatement(pages, currency = 'EUR') {
   const seen = new Map();
   const transactions = [];
   for (const r of rows) {
-    if (!r.expense) continue;
+    if (r.cents === 0) continue;
     const base = `st-${hashString(r.key)}`;
     const n = seen.get(base) || 0;
     seen.set(base, n + 1);
@@ -253,8 +264,8 @@ export function parseStatement(pages, currency = 'EUR') {
       id: n === 0 ? base : `${base}-${n}`,
       date: r.date, time: null, amountCents: r.cents, currency,
       merchant: r.merchant, card: r.card,
-      categoryId: null, manualCategory: false, note: '', source: 'statement',
+      categoryId: null, manualCategory: false, note: '', source: 'statement', kind: r.kind,
     }));
   }
-  return { ok: true, bank, transactions, other: rows.length - transactions.length, errors };
+  return { ok: true, bank, transactions, ignored: rows.length - transactions.length, errors };
 }

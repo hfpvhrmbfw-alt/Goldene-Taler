@@ -61,6 +61,9 @@
     <div class="sheethead">
       <h2 id="edit-title">buchung</h2>
     </div>
+    <div class="seg full" id="kind-seg" role="group" aria-label="Art der Buchung">
+      <button type="button" data-kind="expense">ausgabe</button><button type="button" data-kind="income">einnahme</button><button type="button" data-kind="saving">sparen</button><button type="button" data-kind="transfer">umbuchung</button>
+    </div>
     <label class="field"><span class="cap">händler</span><input name="merchant" required autocomplete="off"></label>
     <div class="two">
       <label class="field"><span class="cap" id="edit-amount-cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
@@ -89,6 +92,10 @@
 
 <dialog class="sheet" id="sort-dialog" aria-labelledby="sort-title">
   <div id="sort-body"></div>
+</dialog>
+
+<dialog class="sheet" id="filter-dialog" aria-labelledby="filter-title">
+  <div id="filter-body"></div>
 </dialog>
 
 <dialog class="sheet" id="rule-dialog" aria-labelledby="rule-title">

@@ -13,6 +13,7 @@ export const CATEGORY_LABELS = {
   reisen: 'Reisen',
   sonstiges: 'Sonstiges',
 };
+export const KIND_LABELS = { expense: 'Ausgabe', income: 'Einnahme', saving: 'Sparen', transfer: 'Umbuchung' };
 export const UNCATEGORIZED = 'Ohne Kategorie';
 
 export const LOG_ERRORS = {

@@ -15,8 +15,11 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking, auch 
    (vorab angehakt nur, wenn das Muster eindeutig einen Händler mit mehreren Zahlungen trifft).
 
 5. **Kontoauszug einlesen** (Einstellungen): PDF-Kontoauszug von Trade Republic oder ING (Girokonto)
-   auswählen. Übernommen werden Kartenzahlungen und Lastschriften, auch ohne Apple Pay. Überweisungen, Daueraufträge,
-   Gutschriften und Wertpapiere nicht. Was der Kurzbefehl schon erfasst hat (gleicher Betrag, Auszug höchstens einen Tag
+   auswählen. Übernommen wird jede Zeile mit ihrer **Art**: Ausgabe (Karte, Lastschrift, Überweisung, Dauerauftrag),
+   Einnahme (Gehalt, Einzahlung, Gutschrift, Zinsen), Sparen (Sparplan, zählt nicht als Ausgabe) oder Umbuchung (gleicher
+   Betrag raus und rein auf zwei Konten, höchstens drei Tage auseinander; zählt nirgends). Die Art lässt sich in jeder
+   Buchung ändern. Wer Einnahmen hat, sieht oben in der Übersicht, was nach Einnahmen, Ausgaben und Sparen übrig ist.
+   Buchungen lassen sich nach Art, Betrag und Datum sortieren und nach Kategorie und Herkunft filtern. Was der Kurzbefehl schon erfasst hat (gleicher Betrag, Auszug höchstens einen Tag
    früher oder fünf Tage später), kommt nicht doppelt, egal in welcher Reihenfolge eingelesen wird. Das PDF liest
    pdf.js direkt im Browser (`vendor/pdfjs`, nichts aus dem Netz), die Datei selbst wird nicht gespeichert.
 

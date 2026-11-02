@@ -5,7 +5,7 @@ import {
 } from './model.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
-  sortTransactions, monthOf, findCrossDuplicates, categoriesByUse, ruleDefault,
+  sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { pdfPages } from './pdf.js';
@@ -28,7 +28,7 @@ let db;
 const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [] };
 const view = {
   tab: 'overview', month: clock().month,
-  listMonth: clock().month, lastListMonth: clock().month, listCategory: undefined, listMerchant: null, query: '', from: null,
+  listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
   importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true },
 };
 // Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
@@ -123,7 +123,7 @@ function showCurveDay(fig, day) {
 
 /** Zahl am Home-Bildschirm-Icon: Zahlungen ohne Kategorie (iOS 16.4+, nur installiert). */
 function updateBadge() {
-  const n = state.transactions.filter((t) => !t.categoryId && !t.excluded).length;
+  const n = state.transactions.filter(needsCategory).length;
   try {
     if (n && navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {});
     else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
@@ -262,16 +262,25 @@ async function importStatement(file) {
   const r = parseStatement(pages, state.settings.currency);
   if (!r.ok) { await ask(STATEMENT_ERRORS[r.error], 'OK', { cancel: false }); return; }
   const snap = snapshot();
-  const { incoming, dupes } = withoutCrossDuplicates(r.transactions);
-  const { transactions: merged, added } = mergeTransactions(state.transactions, applyRules(incoming, state.rules), state.deletedIds);
+  const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
+  // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
+  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
+  const marks = findTransfers(state.transactions, rows.filter((t) => !known.has(t.id)));
+  const incoming = rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t));
+  const changed = state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map((t) => ({ ...t, kind: 'transfer', categoryId: null, manualCategory: false }));
+  const byId = new Map(changed.map((t) => [t.id, t]));
+  const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), applyRules(incoming, state.rules), state.deletedIds);
   state.transactions = merged;
+  if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
-  view.importReport = ui.statementReportHtml(r.bank, added.length, incoming.length - added.length, dupes, r.other, r.errors);
+  const kinds = { expense: 0, income: 0, saving: 0, transfer: changed.length };
+  for (const t of added) kinds[kindOf(t)] += 1;
+  view.importReport = ui.statementReportHtml(r.bank, added, incoming.length - added.length, dupes, kinds, r.errors);
   view.fresh = new Set(added.map((t) => t.id));
   if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
   selectTab('overview');
-  if (added.length) undoable(`${added.length} ${added.length === 1 ? 'Zahlung' : 'Zahlungen'} aus dem Kontoauszug`, snap);
-  else toast('Keine neuen Zahlungen');
+  if (added.length) undoable(`${added.length} ${added.length === 1 ? 'Buchung' : 'Buchungen'} aus dem Kontoauszug`, snap);
+  else toast('Keine neuen Buchungen');
 }
 
 async function removeDemo() {
@@ -327,7 +336,23 @@ function demoLog() {
   return lines.join('\n');
 }
 
+// ---------- Filter ----------
+function renderFilter() {
+  const count = groupByDay(state.transactions, ui.listFilter(view, state.settings.currency)).reduce((a, g) => a + g.items.length, 0);
+  ui.renderFilter($('#filter-body'), state, view, count);
+}
+
 // ---------- Bearbeiten ----------
+/** Art im Bearbeiten-Blatt wählen. Kategorie gibt es nur bei Ausgaben. */
+function setEditKind(kind) {
+  view.editKind = kind;
+  for (const b of document.querySelectorAll('#kind-seg button')) b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
+  const f = $('#edit-form');
+  f.categoryId.closest('label').hidden = kind !== 'expense';
+  if (kind !== 'expense') $('#rule-offer').hidden = true;
+  $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : 'betrag';
+}
+
 function openEditor(id) {
   const c = clock();
   const t = id ? state.transactions.find((x) => x.id === id) : { ...emptyTransaction(null, c.today), time: c.time };
@@ -335,10 +360,9 @@ function openEditor(id) {
   view.editing = t;
   const f = $('#edit-form');
   f.merchant.value = t.merchant;
-  f.amount.value = id ? ui.amountInput(t.amountCents) : '';
+  f.amount.value = id ? ui.amountInput(kindOf(t) === 'income' ? Math.abs(t.amountCents) : t.amountCents) : '';
   const cur = state.settings.currency;
   const foreign = !!id && t.currency !== cur;
-  $('#edit-amount-cap').textContent = id ? `betrag (${t.currency.toLowerCase()})` : 'betrag';
   $('#base-field').hidden = !foreign;
   $('#base-cap').textContent = `abgerechnet in ${cur.toLowerCase()}`;
   f.baseAmount.value = foreign && t.baseCents !== null ? ui.amountInput(t.baseCents) : '';
@@ -348,6 +372,8 @@ function openEditor(id) {
   f.categoryId.innerHTML = ui.categoryOptions(t.categoryId);
   f.note.value = t.note;
   f.excluded.checked = !!t.excluded;
+  setEditKind(kindOf(t));
+  if (foreign) $('#edit-amount-cap').textContent = `betrag (${t.currency.toLowerCase()})`;
   const ml = $('#edit-merchant');
   ml.hidden = !id || !t.merchant;
   ml.dataset.merchant = t.merchant;
@@ -381,6 +407,9 @@ async function saveEditor() {
     $('#edit-error').hidden = false;
     return false;
   }
+  const kind = view.editKind;
+  // Einnahmen stehen negativ (Geld kam rein), Sparen positiv; sonst gilt das Vorzeichen, wie eingetippt (negativ = Erstattung).
+  const cents = kind === 'income' ? -Math.abs(amount.cents) : kind === 'saving' ? Math.abs(amount.cents) : amount.cents;
   const currency = amount.currency || t.currency || state.settings.currency;
   let baseCents = null;
   if (currency !== state.settings.currency && f.baseAmount.value.trim()) {
@@ -393,13 +422,14 @@ async function saveEditor() {
     baseCents = b.cents;
   }
   const snap = snapshot();
-  const cat = f.categoryId.value || null;
+  const cat = kind === 'expense' ? f.categoryId.value || null : null;
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let categoryId = cat;
   let manualCategory = t.manualCategory || (cat !== t.categoryId);
-  if (!t.id && !cat) { categoryId = categorize(f.merchant.value, state.rules); manualCategory = false; }
+  if (!t.id && !cat && kind === 'expense') { categoryId = categorize(f.merchant.value, state.rules); manualCategory = false; }
+  if (kind !== 'expense') { categoryId = null; manualCategory = false; }
   const next = sanitizeTransaction({
-    ...t, id, merchant: f.merchant.value, amountCents: amount.cents, currency, baseCents,
+    ...t, id, merchant: f.merchant.value, amountCents: cents, kind, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
   });
@@ -444,7 +474,7 @@ const sorter = { total: 0, skipped: new Set(), last: null, cats: [] };
 /** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol). */
 function sortQueue() {
   return sortTransactions(state.transactions)
-    .filter((t) => !t.categoryId && !t.excluded && !sorter.skipped.has(t.id));
+    .filter((t) => needsCategory(t) && !sorter.skipped.has(t.id));
 }
 
 function renderSorter() {
@@ -586,7 +616,7 @@ function bind() {
   for (const a of document.querySelectorAll('.tabbar a')) {
     a.addEventListener('click', (e) => {
       e.preventDefault();
-      if (a.dataset.tab === 'list') { view.listCategory = undefined; view.listMerchant = null; }
+      if (a.dataset.tab === 'list') { view.listCats = []; view.listMerchant = null; }
       selectTab(a.dataset.tab);
     });
   }
@@ -598,13 +628,13 @@ function bind() {
     if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; view.importReport = ''; render(); if (b.closest('.review')) window.scrollTo(0, 0); }
     if (act === 'goto') selectTab(b.dataset.tab);
     if (act === 'back') {
-      if (b.dataset.tab === 'overview') { view.listCategory = undefined; view.listMerchant = null; }
+      if (b.dataset.tab === 'overview') { view.listCats = []; view.listMerchant = null; }
       selectTab(b.dataset.tab);
     }
     if (act === 'filter-cat' || act === 'filter-merchant' || act === 'show-merchant') {
       const merchant = act !== 'filter-cat';
       // Händler: alle Zahlungen dort, nicht nur dieser Monat.
-      view.listCategory = merchant ? undefined : b.dataset.cat || null;
+      Object.assign(view, { listKind: undefined, listSources: [], hideExcluded: false, listCats: merchant ? [] : [b.dataset.cat || null] });
       view.listMerchant = merchant ? b.dataset.merchant : null;
       view.listMonth = merchant ? null : view.month;
       view.lastListMonth = view.month;
@@ -621,7 +651,12 @@ function bind() {
     }
     if (act === 'list-month' && b.dataset.month) { view.listMonth = b.dataset.month; view.lastListMonth = b.dataset.month; render(); }
     if (act === 'list-scope') { view.listMonth = b.dataset.scope === 'all' ? null : view.lastListMonth; render(); }
-    if (act === 'clear-cat') { view.listCategory = undefined; render(); }
+    if (act === 'clear-cat') { view.listCats = view.listCats.filter((c) => c !== (b.dataset.cat || null)); render(); }
+    if (act === 'clear-source') { view.listSources = view.listSources.filter((k) => k !== b.dataset.source); render(); }
+    if (act === 'clear-excluded') { view.hideExcluded = false; render(); }
+    if (act === 'list-kind') { view.listKind = b.dataset.kind || undefined; render(); }
+    if (act === 'list-sort') { view.sort = { new: 'old', old: 'big', big: 'new' }[view.sort]; render(); }
+    if (act === 'open-filter') { renderFilter(); openSheet($('#filter-dialog')); }
     if (act === 'clear-merchant') { view.listMerchant = null; render(); }
     if (act === 'edit') openEditor(b.dataset.id);
     if (act === 'sort') openSorter();
@@ -660,6 +695,24 @@ function bind() {
     if (a) await sorterAction(a.dataset.sort);
   });
   $('#sort-dialog').addEventListener('close', () => render());
+  $('#filter-dialog').addEventListener('close', () => render());
+  $('#filter-dialog').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-filter]');
+    if (!b) return;
+    const toggle = (list, v) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+    const act = b.dataset.filter;
+    if (act === 'cat') view.listCats = toggle(view.listCats, b.dataset.cat || null);
+    if (act === 'source') view.listSources = toggle(view.listSources, b.dataset.source);
+    if (act === 'excluded') view.hideExcluded = b.checked;
+    if (act === 'reset') Object.assign(view, { listCats: [], listSources: [], hideExcluded: false });
+    if (act === 'close') { closeSheet($('#filter-dialog')); return; }
+    renderFilter();
+  });
+  // Art der Buchung im Bearbeiten-Blatt
+  $('#kind-seg').addEventListener('click', (e) => {
+    const k = e.target.closest('[data-kind]')?.dataset.kind;
+    if (k) setEditKind(k);
+  });
 
   document.addEventListener('change', async (e) => {
     if (e.target.id === 'statement-file') {

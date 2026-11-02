@@ -2,10 +2,10 @@
 import { CATEGORY_IDS } from './model.js';
 import {
   monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf,
 } from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { CATEGORY_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
+import { CATEGORY_LABELS, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -105,6 +105,27 @@ export function backupDue(state, info, today) {
 }
 const backupLabel = (info, today) => (info.lastBackup ? `letzte ${sinceLabel(String(info.lastBackup).slice(0, 10), today)}` : 'noch nie gesichert');
 
+/** Bilanz des Monats: was nach Einnahmen, Ausgaben und Sparen übrig ist, dazu ein Balken und die Einzelsummen. */
+function balanceBlock(s, compare, cur) {
+  const left = s.balanceCents;
+  const out = s.spentCents + s.savingCents;
+  const over = left < 0;
+  const share = over ? Math.abs(left) / s.incomeCents : left / s.incomeCents;
+  const outPct = over ? s.incomeCents / out * 100 : out / s.incomeCents * 100;
+  const label = over ? 'mehr ausgegeben als eingenommen' : 'übrig nach einnahmen';
+  const sub = over ? `${pct(share)} über den Einnahmen` : `${pct(share)} der Einnahmen übrig`;
+  const note = over ? 'dunkel = durch Einnahmen gedeckt · rot = darüber' : 'dunkel = ausgegeben · grün = übrig';
+  return `<div class="saldo">
+    <div class="kpi hero"><div class="cap">${label}</div><div class="v ${over ? 'neg' : 'pos'}">${over ? '−' : '+'}${moneyHero(Math.abs(left), cur)}</div><div class="sub">${sub}</div></div>
+    <div class="split" role="img" aria-label="${esc(`${label}: ${money(Math.abs(left), cur)}`)}"><span class="out" style="width:${Math.min(100, outPct).toFixed(1)}%"></span><span class="${over ? 'over' : 'left'}" style="flex:1"></span></div>
+    <p class="barnote">${note}</p>
+    <div class="kpis">
+      <div class="kpi"><div class="cap">einnahmen</div><div class="v">${money(s.incomeCents, cur)}</div><div class="sub">${s.savingCents ? `davon gespart ${money(s.savingCents, cur)}` : 'laut Kontoauszug'}</div></div>
+      <div class="kpi"><div class="cap">ausgaben</div><div class="v">${money(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
+    </div>
+  </div>`;
+}
+
 /** Übersicht eines Monats. */
 export function renderOverview(el, state, view, clock, info) {
   const cur = state.settings.currency;
@@ -112,7 +133,7 @@ export function renderOverview(el, state, view, clock, info) {
   const s = monthSummary(state.transactions, view.month, clock.today, state.settings.monthlyBudgetCents, cur);
   const idx = months.indexOf(view.month);
   const uncategorized = s.byCategory.find((c) => c.categoryId === null);
-  const open = state.transactions.filter((t) => !t.categoryId && !t.excluded).length;
+  const open = state.transactions.filter(needsCategory).length;
   const demoCount = state.transactions.filter((t) => t.source === 'demo').length;
 
   let html = `
@@ -142,13 +163,20 @@ export function renderOverview(el, state, view, clock, info) {
   const compare = !s.previousComplete
     ? (s.previousCents ? `${monthName(previousMonth(view.month))} nur teilweise erfasst` : 'Vormonat ohne Daten')
     : `${signed(s.spentCents - ref, cur)} zum ${monthName(previousMonth(view.month))}${s.comparedToDay !== null ? ` bis ${s.comparedToDay}.` : ''}`;
-  html += `
+  if (s.incomeCents > 0) {
+    html += balanceBlock(s, compare, cur);
+    if (s.budgetLeftCents !== null) {
+      html += `<div class="kpis"><div class="kpi"><div class="cap">budget übrig</div><div class="v">${money(s.budgetLeftCents, cur)}</div><div class="sub">${pct(s.budgetShare)} von ${money(state.settings.monthlyBudgetCents, cur)}</div></div></div>`;
+    }
+  } else {
+    html += `
   <div class="kpis">
     <div class="kpi hero"><div class="cap">erfasste ausgaben</div><div class="v">${moneyHero(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
     ${s.budgetLeftCents !== null
       ? `<div class="kpi"><div class="cap">budget übrig</div><div class="v">${money(s.budgetLeftCents, cur)}</div><div class="sub">${pct(s.budgetShare)} von ${money(state.settings.monthlyBudgetCents, cur)}</div></div>`
       : `<div class="kpi"><div class="cap">pro tag</div><div class="v">${money(s.dailyAverageCents, cur)}</div><div class="sub">Durchschnitt</div></div>`}
   </div>`;
+  }
   if (s.budgetShare !== null) {
     const pace = s.comparedToDay !== null ? s.monthProgress : null;
     const label = `Budget zu ${pct(s.budgetShare)} verbraucht${pace !== null ? `, ${pct(pace)} des Monats vorbei` : ''}`;
@@ -265,6 +293,7 @@ function yearBlock(state, view, clock, months) {
   const notes = [];
   if (y.averageCents !== null) notes.push(`ø ${money(y.averageCents, cur)} pro monat`);
   const ch = y.previousCents !== null ? change(y.totalCents, y.previousCents) : null;
+  if (y.incomeCents > 0) notes.push(`übrig ${signed(y.incomeCents - y.totalCents - y.savingCents, cur)}`);
   if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
   return `${head(`jahr ${year}`)}
   <div class="year">
@@ -314,15 +343,37 @@ function reviewCard(state, clock, info) {
 
 const standaloneNote = () => `<div class="note info"><span class="cap">tipp</span>Öffne Taler über <b>Teilen › Zum Home-Bildschirm</b>. Safari und die App auf dem Home-Bildschirm speichern getrennt.</div>`;
 
-/** Liste der Buchungen mit eigenem Monat, Suche und Filtern. */
+const SORTS = { new: 'neueste zuerst', old: 'älteste zuerst', big: 'größter betrag' };
+const SORT_ARROW = { new: '↓', old: '↑', big: '€' };
+const SOURCE_LABELS = { shortcut: 'Apple Pay', statement: 'Kontoauszug', manual: 'von Hand', demo: 'Beispiel' };
+
+/** Auswahl der Filter in der Liste, aus view gelesen (in Logik-Filter übersetzt). */
+export function listFilter(view, currency) {
+  return {
+    month: view.listMonth, kind: view.listKind, categoryIds: view.listCats, sources: view.listSources, hideExcluded: view.hideExcluded,
+    merchant: view.listMerchant, query: view.query, sort: view.sort, currency,
+  };
+}
+const filterCount = (view) => view.listCats.length + view.listSources.length + (view.hideExcluded ? 1 : 0);
+
+/** Summe für Zeilen mit Ausgaben und/oder Einnahmen: „12,00 €“, „+2.100,00 €“ oder beides. */
+const dayTotal = (g, cur) => {
+  const out = g.totalCents || (!g.incomeCents && !g.foreign.length) ? sumHtml(g.totalCents, cur) : '';
+  const inc = g.incomeCents ? `<span class="in">+${money(g.incomeCents, cur)}</span>` : '';
+  return [out, inc, foreignText(g.foreign)].filter(Boolean).join(' · ');
+};
+
+/** Liste der Buchungen mit eigenem Monat, Suche, Art, Sortierung und Filtern. */
 export function renderList(el, state, view, clock) {
   const cur = state.settings.currency;
-  const groups = groupByDay(state.transactions, { month: view.listMonth, categoryId: view.listCategory, merchant: view.listMerchant, query: view.query, currency: cur });
+  const groups = groupByDay(state.transactions, listFilter(view, cur));
   const count = groups.reduce((a, g) => a + g.items.length, 0);
-  const total = groups.reduce((a, g) => a + g.totalCents, 0);
+  const total = { totalCents: 0, incomeCents: 0, foreign: [] };
+  for (const g of groups) { total.totalCents += g.totalCents; total.incomeCents += g.incomeCents; total.foreign.push(...g.foreign); }
   const months = monthsWithData(state.transactions, clock.month);
   const m = view.listMonth;
   const idx = m ? months.indexOf(m) : -1;
+  const n = filterCount(view);
 
   let html = `
   <div class="titlerow">
@@ -332,36 +383,65 @@ export function renderList(el, state, view, clock) {
       <button class="iconbtn" data-act="list-month" data-month="${months[idx - 1] || ''}" ${idx > 0 ? '' : 'disabled'} aria-label="Nächster Monat">${ICON.next}</button>
     </div>` : ''}
   </div>
-  <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${sumHtml(total, cur)}</p>
+  <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${dayTotal(total, cur) || money(0, cur)}</p>
   ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) : ''}
   <label class="search">${ICON.search}<input type="search" id="f-query" value="${esc(view.query)}" placeholder="suchen" aria-label="Händler oder Notiz suchen"></label>
   <div class="seg" role="group" aria-label="Zeitraum">
     <button data-act="list-scope" data-scope="month" aria-pressed="${!!m}">${esc(monthName(m || view.lastListMonth || clock.month).toLowerCase())}</button>
     <button data-act="list-scope" data-scope="all" aria-pressed="${!m}">alle</button>
+  </div>
+  <div class="seg full" role="group" aria-label="Art">
+    ${[['', 'alle'], ['expense', 'ausgaben'], ['income', 'einnahmen']].map(([k, l]) => `<button data-act="list-kind" data-kind="${k}" aria-pressed="${(view.listKind || '') === k}">${l}</button>`).join('')}
+  </div>
+  <div class="toolrow">
+    <button class="pill" data-act="list-sort" aria-label="Sortierung: ${SORTS[view.sort]}, antippen zum Wechseln">${SORT_ARROW[view.sort]} ${SORTS[view.sort]}</button>
+    <button class="pill${n ? ' on' : ''}" data-act="open-filter">filter${n ? ` · ${n}` : ''}</button>
   </div>`;
   const chips = [];
   const x = ICON.close.replace('<svg', '<svg width="14" height="14" stroke="currentColor" fill="none" stroke-width="2"');
-  if (view.listCategory !== undefined) chips.push(`<button class="chip" data-act="clear-cat" aria-label="Filter ${esc(catLabel(view.listCategory))} entfernen">${esc(catLabel(view.listCategory))} ${x}</button>`);
+  const chip = (act, attrs, label) => `<button class="chip" data-act="${act}" ${attrs} aria-label="Filter ${esc(label)} entfernen">${esc(label)} ${x}</button>`;
+  for (const c of view.listCats) chips.push(chip('clear-cat', `data-cat="${c ?? ''}"`, catLabel(c)));
+  for (const k of view.listSources) chips.push(chip('clear-source', `data-source="${k}"`, SOURCE_LABELS[k]));
+  if (view.hideExcluded) chips.push(chip('clear-excluded', '', 'ohne „zählt nicht mit“'));
   if (chips.length) html += `<div class="chips">${chips.join('')}</div>`;
 
   if (!groups.length) html += `<p class="empty">Keine Buchungen für diese Auswahl.</p>`;
   html += `<ul class="list">`;
   for (const g of groups) {
-    const daySum = [g.totalCents || !g.foreign.length ? sumHtml(g.totalCents, cur) : '', foreignText(g.foreign)].filter(Boolean).join(' + ');
-    html += `<li class="cap day" role="heading" aria-level="3"><span>${esc(dayLabel(g.date, clock.today, clock.yesterday))}</span><span class="num">${daySum}</span></li>`;
+    if (g.date) html += `<li class="cap day" role="heading" aria-level="3"><span>${esc(dayLabel(g.date, clock.today, clock.yesterday))}</span><span class="num">${dayTotal(g, cur)}</span></li>`;
     for (const t of g.items) {
       const base = t.currency !== cur ? (t.baseCents !== null ? `= ${money(t.baseCents, cur)}` : `ohne ${cur}-Betrag`) : '';
-      const sub = [t.excluded ? 'zählt nicht mit' : '', catLabel(t.categoryId), base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : ''].filter(Boolean).map(esc).join(' · ');
+      const kind = kindOf(t);
+      const dim = t.excluded || kind === 'transfer';
+      const sub = [
+        t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : kind !== 'expense' ? KIND_LABELS[kind] : '',
+        g.date ? '' : dayLabel(t.date, clock.today, clock.yesterday),
+        kind === 'expense' ? catLabel(t.categoryId) : '', base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
+      ].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
-        tag: 'button', cls: `${t.categoryId || t.excluded ? '' : 'open'}${fresh ? ' fresh' : ''}${t.excluded ? ' excluded' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
+        tag: 'button', cls: `${needsCategory(t) ? 'open' : ''}${fresh ? ' fresh' : ''}${dim ? ' excluded' : ''}`, attrs: `data-act="edit" data-id="${esc(t.id)}"${fresh ? ' aria-description="neu"' : ''}`,
         title: esc(t.merchant || 'Ohne Händler'), sub,
-        n: `${t.amountCents < 0 ? '+' : ''}${money(Math.abs(t.amountCents), t.currency)}`, nCls: t.amountCents < 0 ? 'in' : '',
+        n: `${t.amountCents < 0 ? '+' : ''}${money(Math.abs(t.amountCents), t.currency)}`, nCls: t.amountCents < 0 && kind !== 'transfer' ? 'in' : '',
       });
     }
   }
   html += `</ul>`;
   el.innerHTML = html;
+}
+
+/** Blatt „filter“: Kategorien (mehrere), Herkunft, ausgenommene Buchungen. `count` = Treffer mit der jetzigen Auswahl. */
+export function renderFilter(el, state, view, count) {
+  const cats = [...CATEGORY_IDS, null];
+  const pill = (act, attrs, on, label) => `<button class="pill${on ? ' on' : ''}" data-filter="${act}" ${attrs} aria-pressed="${on}">${esc(label)}</button>`;
+  el.innerHTML = `
+  <div class="sheethead"><h2 id="filter-title">filter</h2><button class="textbtn" data-filter="reset">zurücksetzen</button></div>
+  <h3 class="cap listhead">kategorie</h3>
+  <div class="chipset">${cats.map((c) => pill('cat', `data-cat="${c ?? ''}"`, view.listCats.includes(c), catLabel(c))).join('')}</div>
+  <h3 class="cap listhead">woher</h3>
+  <div class="chipset">${['shortcut', 'statement', 'manual'].map((k) => pill('source', `data-source="${k}"`, view.listSources.includes(k), SOURCE_LABELS[k])).join('')}</div>
+  <label class="ruleopt"><input type="checkbox" data-filter="excluded"${view.hideExcluded ? ' checked' : ''}><span>„zählt nicht mit“ ausblenden</span></label>
+  <div class="actions sticky"><button class="btn primary" data-filter="close">${plural(count, 'Buchung', 'Buchungen')} zeigen</button></div>`;
 }
 
 /** Kopf der Händler-Ansicht: dieses Jahr und insgesamt. */
@@ -497,22 +577,26 @@ export function importReportHtml(added, known, errors, ignoredNew, dupes = 0) {
   return html;
 }
 
-/** Ergebnis eines Kontoauszugs: neu, bekannt, schon per Kurzbefehl da, nicht übernommen. */
-export function statementReportHtml(bank, added, known, dupes, other, errors) {
-  const parts = [`${added} neu`, `${known} schon bekannt`];
+/** Ergebnis eines Kontoauszugs: neu, bekannt, schon per Kurzbefehl da, dazu was die neuen Buchungen sind. */
+export function statementReportHtml(bank, added, known, dupes, kinds, errors) {
+  const parts = [`${added.length} neu`, `${known} schon bekannt`];
   if (dupes) parts.push(`${dupes} schon per Apple Pay erfasst`);
-  let html = `<div class="note ${added ? 'ok' : 'info'}"><span class="cap">${esc(BANK_LABELS[bank] || bank)}</span>${parts.join(', ')}.</div>`;
+  let html = `<div class="note ${added.length ? 'ok' : 'info'}"><span class="cap">${esc(BANK_LABELS[bank] || bank)}</span>${parts.join(', ')}.</div>`;
   if (errors) html += `<div class="note warn"><span class="cap">übersprungen</span>${plural(errors, 'Zeile', 'Zeilen')} nicht lesbar.</div>`;
-  if (other) html += `<p class="barnote">${plural(other, 'Buchung', 'Buchungen')} ohne Karte oder Lastschrift (Überweisungen, Gutschriften, Wertpapiere) nicht übernommen.</p>`;
+  const rows = [
+    ['expense', 'Ausgaben', 'Karte, Lastschrift, Überweisung, Dauerauftrag'], ['income', 'Einnahmen', 'Gehalt, Einzahlungen, Gutschriften'],
+    ['saving', 'Sparpläne', 'zählen nicht als Ausgabe'], ['transfer', 'Umbuchungen', 'zwischen deinen Konten, zählen nicht'],
+  ].filter(([k]) => kinds[k]);
+  if (rows.length) html += `<ul class="list">${rows.map(([k, t, sub]) => item({ title: t, sub, n: kinds[k], nCls: k === 'income' ? 'in' : '' })).join('')}</ul>`;
   return html;
 }
 
 /** CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. */
 export function buildCsv(transactions) {
   const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt'].map(q).join(';')];
+  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt', 'Art'].map(q).join(';')];
   for (const t of transactions) {
-    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja'].map(q).join(';'));
+    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja', KIND_LABELS[kindOf(t)]].map(q).join(';'));
   }
   return '﻿' + lines.join('\r\n');
 }
