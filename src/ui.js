@@ -134,8 +134,8 @@ function balanceBlock(s, compare, cur) {
     <div class="split" role="img" aria-label="${esc(`${label}: ${money(Math.abs(left), cur)}`)}"><span class="out" style="width:${Math.min(100, outPct).toFixed(1)}%"></span><span class="${over ? 'over' : 'left'}" style="flex:1"></span></div>
     <p class="barnote">${note}</p>
     <div class="kpis">
-      <div class="kpi"><div class="cap">einnahmen</div><div class="v">${money(s.incomeCents, cur)}</div><div class="sub">${s.savingCents ? `davon gespart ${money(s.savingCents, cur)}` : 'laut Kontoauszug'}</div></div>
-      <div class="kpi"><div class="cap">ausgaben</div><div class="v">${money(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
+      <button class="kpi tap" data-act="kind-list" data-kind="income"><div class="cap">einnahmen ›</div><div class="v">${money(s.incomeCents, cur)}</div><div class="sub">${s.savingCents ? `davon gespart ${money(s.savingCents, cur)}` : 'laut Kontoauszug'}</div></button>
+      <button class="kpi tap" data-act="kind-list" data-kind="expense"><div class="cap">ausgaben ›</div><div class="v">${money(s.spentCents, cur)}</div><div class="sub">${compare}</div></button>
     </div>
   </div>`;
 }
@@ -621,7 +621,8 @@ export function renderRules(el, state) {
  * @param {{t: object|null, pos: number, total: number, pattern: string, cats: string[], last: {text: string}|null}} s
  */
 export function renderSorter(el, state, s, clock) {
-  const undo = s.last ? `<button class="textbtn undo" data-sort="undo">rückgängig: ${esc(s.last.text)}</button>` : '';
+  const last = s.history[s.history.length - 1];
+  const undo = last ? `<button class="textbtn undo" data-sort="undo">rückgängig: ${esc(last.text)}${s.history.length > 1 ? ` <span class="muted">(${s.history.length} schritte)</span>` : ''}</button>` : '';
   if (!s.t) {
     el.innerHTML = `
     <div class="sheethead"><h2 id="sort-title">einordnen</h2><button class="iconbtn" data-sort="close" aria-label="Schließen">${ICON.close}</button></div>
@@ -641,6 +642,7 @@ export function renderSorter(el, state, s, clock) {
   </div>
   <div class="catgrid" role="group" aria-label="Kategorie wählen">
     ${cats.map((id) => `<button class="catbtn" data-sort-cat="${esc(id)}">${esc(catLabel(id))}</button>`).join('')}
+    <button class="catbtn transfer" data-sort="transfer" title="Geld zwischen eigenen Konten, zählt nirgends">Umbuchung</button>
     <button class="catbtn add" data-sort="new-cat">+ neue</button>
   </div>
   ${s.pattern ? `<label class="ruleopt"><input type="checkbox" id="sort-make-rule"${ruleDefault(state.transactions, s.pattern) ? ' checked' : ''}><span>Künftig alle bei <input id="sort-pattern" class="inline-input" value="${esc(s.pattern)}" aria-label="Muster"> so einordnen</span></label>` : ''}
