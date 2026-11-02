@@ -33,3 +33,34 @@ export const DEFAULT_RULES = [
   ['apple.com', 'abos'], ['spotify', 'abos'], ['netflix', 'abos'], ['disney', 'abos'],
   ['lufthansa', 'reisen'], ['eurowings', 'reisen'], ['ryanair', 'reisen'], ['booking.com', 'reisen'], ['airbnb', 'reisen'],
 ].map(([pattern, categoryId], i) => ({ id: `std-${String(i + 1).padStart(2, '0')}`, pattern, categoryId }));
+
+/**
+ * Vorlagen für Banken: Konten zum Anhaken. `on` = vorab angehakt. Alles ist danach frei änderbar.
+ * Erkennungswörter passen zu den Kontoauszügen (Karte „ING“, „Trade Republic“).
+ * @type {Record<string, {bank: string, accounts: {name: string, type: 'konto'|'tagesgeld'|'depot', main?: boolean, other?: boolean, match?: string[], rate?: boolean, on: boolean, hint: string}[]}>}
+ */
+export const BANK_TEMPLATES = {
+  ing: {
+    bank: 'ING',
+    accounts: [
+      { name: 'Girokonto', type: 'konto', main: true, match: ['ING'], on: true, hint: 'Eingangskonto · Auszüge als PDF einlesbar' },
+      { name: 'Extra-Konto', type: 'tagesgeld', match: ['Extra-Konto'], on: true, hint: 'Tagesgeld' },
+      { name: 'Depot', type: 'depot', on: true, hint: 'Aktien und ETFs' },
+      { name: 'Kinderdepot', type: 'depot', other: true, on: false, hint: 'gehört jemand anderem · zählt nicht zu deinem Vermögen' },
+    ],
+  },
+  traderepublic: {
+    bank: 'Trade Republic',
+    accounts: [
+      { name: 'Konto mit Karte', type: 'konto', match: ['Trade Republic'], rate: true, on: true, hint: 'Verrechnungskonto mit Zinsen · Auszüge als PDF einlesbar' },
+      { name: 'Depot', type: 'depot', on: true, hint: 'Aktien, ETFs, Sparpläne' },
+    ],
+  },
+  scalable: {
+    bank: 'Scalable Capital',
+    accounts: [
+      { name: 'Tagesgeld', type: 'tagesgeld', match: ['Scalable'], on: true, hint: 'Stand von Hand, Umbuchungen rechnet Taler dazu' },
+      { name: 'Depot', type: 'depot', on: true, hint: 'Aktien und ETFs' },
+    ],
+  },
+};

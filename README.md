@@ -39,6 +39,22 @@ zusammenlegen, auch direkt beim Einordnen mit „+ neue“. Jede hat eine Art: A
 Übersicht) oder Sparen. Das **Monatsbudget** ist automatisch (Einnahmen minus Sparpläne des Monats, bis das Gehalt da
 ist die des Vormonats), ein fester Betrag oder aus.
 
+**Konten** (eigener Reiter): Banken mit ihren Konten, Tagesgeldern und Depots, für ING, Trade Republic und Scalable
+Capital als Vorlage zum Anhaken, jede andere Bank von Hand. Oben steht das **Vermögen** (Konten, Tagesgeld, Depots), Konten
+für jemand anderen (Kinderdepot) stehen dabei, zählen aber nicht mit. Den **Stand** liest Taler aus dem Kontoauszug
+(Saldo am Ende) oder du trägst ihn ein; Buchungen danach rechnet Taler dazu, bei Konten ohne Auszug die Umbuchungen
+dorthin („geschätzt“). Jede Buchung gehört zu einem Konto (erkannt am Kartennamen, z. B. „ING Visa“ → ING Girokonto),
+Umbuchungen und Sparpläne haben ein Gegenkonto (erkannt am Namen, sonst in der Buchung „an“ wählen). Daraus entstehen
+der **Geldfluss** des Monats und beim **Eingangskonto** „frei für den Monat“: Eingang minus Fixkosten minus das, was an
+eigene Konten weitergeht. Die frühere Liste „eigene Konten“ wurde beim ersten Start zu Konten (ING, Trade Republic),
+weitere Namen (eigener Name, IBAN) bleiben in den Einstellungen.
+
+**Depots**: Aktien, ETFs und Fonds mit Stück, Kaufwert und Kurs eintragen; der Wert des Depots ist dann die Summe der
+Positionen, mit Gewinn oder Verlust seit Kauf. Sparplan-Ausführungen aus dem Kontoauszug (gleiche ISIN) zählen künftig
+zu Kaufwert und Stück dazu, wenn die Zeile die Stückzahl nennt (Trade Republic: „quantity“). Sparpläne ohne Position
+stehen im Depot zum Eintragen bereit. Kurse holt Taler nicht aus dem Netz, sie stehen mit Datum da und lassen sich für
+alle Positionen auf einer Seite aktualisieren. Ein Depot ohne Positionen hat einen Wert von Hand.
+
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 
@@ -61,6 +77,7 @@ Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wie
 |---|---|
 | `src/model.js` | Datenmodell, Kategorie-IDs, Validierung, Export/Import, Migration |
 | `src/logic.js` | Reine Logik: Zeilen lesen, Beträge parsen, Regeln, Monatsauswertung |
+| `src/accounts.js` | Reine Logik: Konto einer Buchung, Kontostände, Vermögen, Geldfluss, frei für den Monat |
 | `src/statement.js` | Reine Logik: Kontoauszüge (Textstücke mit Position) von Trade Republic und ING lesen |
 | `src/pdf.js` | Adapter zu pdf.js (`vendor/pdfjs`, Apache-2.0), wird erst beim ersten PDF geladen |
 | `src/catalog.js` | Startregeln für häufige Händler (vom Assistenten zusammengestellt, ohne Gewähr) |

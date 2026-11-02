@@ -44,11 +44,14 @@
     <section id="view-settings" hidden></section>
     <section id="view-rules" hidden></section>
     <section id="view-categories" hidden></section>
+    <section id="view-accounts" hidden></section>
+    <section id="view-account" hidden></section>
   </main>
 
   <nav class="tabbar" aria-label="Bereiche"><div class="wrap">
     <a href="#overview" data-tab="overview" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v8h8"/></svg>übersicht</a>
     <a href="#list" data-tab="list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7h11M9 12h11M9 17h11M4 7h.01M4 12h.01M4 17h.01"/></svg>buchungen</a>
+    <a href="#accounts" data-tab="accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9.5L12 4l9 5.5M5 10v7M9.7 10v7M14.3 10v7M19 10v7M3 20h18"/></svg>konten</a>
     <a href="#settings" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>einstellungen</a>
   </div></nav>
 </div>
@@ -70,6 +73,10 @@
       <label class="field"><span class="cap" id="edit-amount-cap">betrag</span><input name="amount" inputmode="decimal" required placeholder="0,00"></label>
       <label class="field"><span class="cap">karte</span><input name="card" autocomplete="off"></label>
     </div>
+    <div class="two" id="acct-row" hidden>
+      <label class="field"><span class="cap" id="acct-cap">konto</span><select name="accountId"></select></label>
+      <label class="field" id="to-field"><span class="cap">an</span><select name="toAccountId"></select></label>
+    </div>
     <label class="field" id="base-field" hidden><span class="cap" id="base-cap">abgerechnet in eur</span><input name="baseAmount" inputmode="decimal" placeholder="laut Kontoauszug, leer = nicht mitzählen" autocomplete="off"></label>
     <div class="two">
       <label class="field"><span class="cap">datum</span><input name="date" type="date" required></label>
@@ -80,7 +87,7 @@
       <label><input type="checkbox" name="makeRule" checked><span>Künftig alle Zahlungen bei <input name="rulePattern" class="inline-input" aria-label="Muster"> so einordnen</span></label>
     </div>
     <div id="own-offer" class="note" hidden>
-      <label><input type="checkbox" name="makeOwn" checked><span><input name="ownPattern" class="inline-input" aria-label="Kontoname"> als eigenes Konto merken, künftig immer Umbuchung</span></label>
+      <label><input type="checkbox" name="makeOwn" checked><span><input name="ownPattern" class="inline-input" aria-label="Kontoname"> <span id="own-text">als eigenes Konto merken, künftig immer Umbuchung</span></span></label>
     </div>
     <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
     <label class="ruleopt exclopt"><input type="checkbox" name="excluded"><span>Nicht mitzählen<span class="muted small">z. B. für jemand anderen ausgelegt, Kaution, Umbuchung</span></span></label>
@@ -141,6 +148,87 @@
       <button class="btn" value="cancel" formnovalidate>abbrechen</button>
     </div>
   </form>
+</dialog>
+
+<dialog class="sheet" id="account-dialog" aria-labelledby="account-title">
+  <form method="dialog" id="account-form-sheet" class="stack">
+    <div class="sheethead">
+      <h2 id="account-title">konto</h2>
+    </div>
+    <div class="two">
+      <label class="field"><span class="cap">bank</span><input name="bank" maxlength="40" placeholder="z. B. ING" autocomplete="off"></label>
+      <label class="field"><span class="cap">name</span><input name="name" required maxlength="40" placeholder="z. B. Extra-Konto" autocomplete="off"></label>
+    </div>
+    <div class="seg full" id="account-type" role="group" aria-label="Art des Kontos">
+      <button type="button" data-atype="konto">konto</button><button type="button" data-atype="tagesgeld">tagesgeld</button><button type="button" data-atype="depot">depot</button>
+    </div>
+    <label class="field" id="rate-field"><span class="cap">zinsen pro jahr</span><input name="rate" inputmode="decimal" placeholder="z. B. 2,5 %" autocomplete="off"></label>
+    <label class="field"><span class="cap">erkennen an</span><input name="match" placeholder="z. B. ING, ING Visa, DE12 3456" autocomplete="off"></label>
+    <p class="muted small">Kartenname, Name im Verwendungszweck oder IBAN, mit Komma getrennt. Daran ordnet Taler Buchungen und Umbuchungen diesem Konto zu.</p>
+    <label class="ruleopt twoline"><input type="checkbox" name="main"><span>Eingangskonto<span class="muted small">hier kommt das Gehalt an, hier rechnet Taler „frei für den Monat“</span></span></label>
+    <label class="ruleopt twoline"><input type="checkbox" name="other"><span>Gehört jemand anderem<span class="muted small">z. B. Kinderdepot: wird gezeigt, zählt nicht zu deinem Vermögen</span></span></label>
+    <p class="err-text" id="account-error" role="alert" hidden></p>
+    <button class="textbtn danger deletebtn" value="delete" id="account-delete" formnovalidate>konto löschen</button>
+    <div class="actions sticky">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="balance-dialog" aria-labelledby="balance-title">
+  <form method="dialog" id="balance-form" class="stack">
+    <div class="sheethead">
+      <h2 id="balance-title">stand eintragen</h2>
+    </div>
+    <p class="muted small" id="balance-hint"></p>
+    <div class="two">
+      <label class="field"><span class="cap">stand</span><input name="amount" inputmode="decimal" required placeholder="0,00" autocomplete="off"></label>
+      <label class="field"><span class="cap">am</span><input name="date" type="date" required></label>
+    </div>
+    <p class="err-text" id="balance-error" role="alert" hidden></p>
+    <div class="actions sticky">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="position-dialog" aria-labelledby="position-title">
+  <form method="dialog" id="position-form" class="stack">
+    <div class="sheethead">
+      <h2 id="position-title">aktie oder etf</h2>
+    </div>
+    <p class="muted small" id="position-hint"></p>
+    <label class="field"><span class="cap">name</span><input name="name" required maxlength="60" placeholder="z. B. MSCI World ETF" autocomplete="off"></label>
+    <label class="field"><span class="cap">isin oder wkn</span><input name="isin" maxlength="12" autocapitalize="characters" autocomplete="off" placeholder="z. B. IE00B4L5Y983"></label>
+    <div class="seg full" id="position-kind" role="group" aria-label="Art">
+      <button type="button" data-pkind="etf">etf</button><button type="button" data-pkind="aktie">aktie</button><button type="button" data-pkind="fonds">fonds</button><button type="button" data-pkind="anderes">anderes</button>
+    </div>
+    <div class="two">
+      <label class="field"><span class="cap">stück</span><input name="units" inputmode="decimal" placeholder="z. B. 12,5" autocomplete="off"></label>
+      <label class="field"><span class="cap">kaufwert gesamt</span><input name="cost" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+    </div>
+    <div class="two">
+      <label class="field"><span class="cap">kurs je stück</span><input name="price" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+      <label class="field"><span class="cap">vom</span><input name="priceDate" type="date"></label>
+    </div>
+    <label class="ruleopt twoline"><input type="checkbox" name="plan"><span>Sparplan-Käufe dazuzählen<span class="muted small">Ausführungen mit dieser ISIN aus dem Kontoauszug erhöhen künftig Kaufwert und Stück</span></span></label>
+    <p class="err-text" id="position-error" role="alert" hidden></p>
+    <button class="textbtn danger deletebtn" value="delete" id="position-delete" formnovalidate>position löschen</button>
+    <div class="actions sticky">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="prices-dialog" aria-labelledby="prices-title">
+  <div id="prices-body"></div>
+</dialog>
+
+<dialog class="sheet" id="tpl-dialog" aria-labelledby="tpl-title">
+  <div id="tpl-body"></div>
 </dialog>
 
 <dialog class="sheet" id="confirm-dialog" aria-labelledby="confirm-text">

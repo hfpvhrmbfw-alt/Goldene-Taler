@@ -1,8 +1,9 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
+import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
@@ -10,7 +11,7 @@ import {
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { pdfPages } from './pdf.js';
-import { DEFAULT_RULES, DEFAULT_CATEGORIES } from './catalog.js';
+import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
 import * as ui from './ui.js';
 
@@ -26,11 +27,12 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [] };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
-  importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true }, budgetShow: null, editKind: 'expense', catEditing: null,
+  importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true, fixed: true }, budgetShow: null, editKind: 'expense', catEditing: null,
+  accountId: null, listAccount: null, tplBank: null, accountEditing: null, accountType: 'konto', positionEditing: null, positionKind: 'etf', pricesAccount: null,
 };
 // Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
 for (const k of Object.keys(view.folds)) {
@@ -42,6 +44,11 @@ const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standa
 /** Kategorienliste setzen: Zustand und Oberfläche kennen dieselbe Liste. */
 function setCategories(list) { state.categories = list; ui.setCategories(list); }
 async function saveCategories() { await db.setMeta('categories', state.categories); }
+async function saveAccounts() { await db.setMeta('accounts', state.accounts); }
+async function savePositions() { await db.setMeta('positions', state.positions); }
+const newAccountId = (i = 0) => `a-${Date.now().toString(36)}${i ? `-${i}` : ''}`;
+/** Alle Namen, an denen Taler eigene Konten erkennt (Konten und weitere Namen aus den Einstellungen). */
+const own = () => ownNames(state.settings, state.accounts);
 /** Mitgelieferte Kategorien, die in einer gespeicherten Liste fehlen (z. B. neu dazugekommene), hinten ergänzen. */
 const withDefaults = (list) => [...list, ...DEFAULT_CATEGORIES.filter((d) => !list.some((c) => c.id === d.id))];
 
@@ -59,7 +66,7 @@ async function reapplyRules() {
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -75,6 +82,8 @@ async function restore(snap) {
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('settings', state.settings);
   await saveCategories();
+  await saveAccounts();
+  await savePositions();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -86,7 +95,9 @@ function undoable(msg, snap) {
 }
 
 // ---------- Rendering ----------
-const TABS = { overview: 'Übersicht', list: 'Buchungen', settings: 'Einstellungen', rules: 'Regeln', categories: 'Kategorien' };
+const TABS = { overview: 'Übersicht', list: 'Buchungen', accounts: 'Konten', account: 'Konto', settings: 'Einstellungen', rules: 'Regeln', categories: 'Kategorien' };
+/** Unterseiten gehören zu einem Reiter der Leiste. */
+const NAV_TAB = { rules: 'settings', categories: 'settings', account: 'accounts' };
 const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
 function render() {
@@ -97,9 +108,14 @@ function render() {
   if (view.tab === 'settings') ui.renderSettings(el, state, view, info, c);
   if (view.tab === 'rules') ui.renderRules(el, state);
   if (view.tab === 'categories') ui.renderCategories(el, state);
+  if (view.tab === 'accounts') ui.renderAccounts(el, state, view, c);
+  if (view.tab === 'account') ui.renderAccount(el, state, view, c);
   document.title = `Taler · ${TABS[view.tab]}`;
   $('#add-btn').hidden = !(view.tab === 'overview' || view.tab === 'list');
-  const back = view.tab === 'rules' || view.tab === 'categories' ? ['settings', 'einstellungen'] : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht'] : null;
+  const back = view.tab === 'rules' || view.tab === 'categories' ? ['settings', 'einstellungen']
+    : view.tab === 'account' ? ['accounts', 'konten']
+      : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht']
+        : view.tab === 'list' && view.from === 'account' && view.listAccount ? ['account', view.listAccount.name.toLowerCase()] : null;
   $('#head-left').innerHTML = back
     ? `<button class="backbtn" type="button" data-act="back" data-tab="${back[0]}">${BACK}<span>${back[1]}</span></button>` : '';
   // Sicherung fällig: Punkt am Reiter Einstellungen statt einer Zeile in der Übersicht.
@@ -146,7 +162,7 @@ function selectTab(tab, { keepFrom = false } = {}) {
   if (tab !== 'overview') view.importReport = '';
   view.tab = tab;
   if (!keepFrom) view.from = null;
-  const navTab = tab === 'rules' || tab === 'categories' ? 'settings' : tab;
+  const navTab = NAV_TAB[tab] || tab;
   for (const a of document.querySelectorAll('.tabbar a')) {
     if (a.dataset.tab === navTab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
@@ -243,7 +259,7 @@ function markTransfers(rows) {
   const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
   const fresh = rows.filter((t) => !known.has(t.id));
   const marks = findTransfers(state.transactions, fresh);
-  for (const t of fresh) if (isOwnAccountMove(t, state.settings.ownAccounts)) marks.add(t.id);
+  for (const t of fresh) if (isOwnAccountMove(t, own())) marks.add(t.id);
   return {
     incoming: rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t)),
     changed: state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer),
@@ -252,8 +268,8 @@ function markTransfers(rows) {
 
 /** Vorhandene Buchungen, die ein eigenes Konto nennen (oder ein Gegenstück haben), zu Umbuchungen machen. */
 async function applyTransfers({ pairs = false } = {}) {
-  const hits = pairs ? transfersIn(state.transactions, state.settings.ownAccounts)
-    : new Set(state.transactions.filter((t) => isOwnAccountMove(t, state.settings.ownAccounts)).map((t) => t.id));
+  const hits = pairs ? transfersIn(state.transactions, own())
+    : new Set(state.transactions.filter((t) => isOwnAccountMove(t, own())).map((t) => t.id));
   const changed = state.transactions.filter((t) => hits.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer);
   if (!changed.length) return 0;
   const byId = new Map(changed.map((t) => [t.id, t]));
@@ -315,6 +331,17 @@ async function importStatement(file) {
   if (added.length) await saveTransactions(added);
   const kinds = { expense: 0, income: 0, saving: 0, transfer: changed.length };
   for (const t of added) kinds[kindOf(t)] += 1;
+  // Stand des Kontos aus dem Auszug; gibt es das Konto noch nicht, legt Taler es nach der Vorlage an.
+  let account = statementAccount(state.accounts, r.card);
+  if (!account) {
+    const tpl = BANK_TEMPLATES[r.bank === 'ing' ? 'ing' : 'traderepublic'];
+    const main = tpl.accounts[0];
+    account = sanitizeAccount({ id: newAccountId(), bank: tpl.bank, name: main.name, type: main.type, main: !!main.main, match: main.match });
+    state.accounts = [...state.accounts, account];
+  }
+  const updated = withStatementBalance(account, r.closing);
+  state.accounts = state.accounts.map((a) => (a.id === account.id ? updated : a));
+  await saveAccounts();
   view.importReport = ui.statementReportHtml(r.bank, added, incoming.length - added.length, dupes, kinds, r.errors);
   view.fresh = new Set(added.map((t) => t.id));
   if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
@@ -342,10 +369,14 @@ async function restoreBackup(text) {
   state.settings = r.settings;
   state.deletedIds = r.deletedIds;
   setCategories(withDefaults(r.categories || []));
+  state.accounts = r.accounts || [];
+  state.positions = r.positions;
   view.budgetShow = null;
   await saveTransactions(state.transactions);
   await saveRules();
   await saveCategories();
+  await saveAccounts();
+  await savePositions();
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
@@ -394,8 +425,29 @@ function setEditKind(kind) {
   const f = $('#edit-form');
   f.categoryId.closest('label').hidden = kind === 'transfer';
   if (kind === 'transfer') $('#rule-offer').hidden = true;
+  fillAccountSelects();
   updateOwnOffer();
   $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : kind === 'balance' ? 'betrag (− = eingegangen)' : 'betrag';
+}
+
+/** Konto und Gegenkonto im Bearbeiten-Blatt: leer = erkennen lassen (der erkannte Name steht dabei). Nur, wenn es Konten gibt. */
+function fillAccountSelects() {
+  const f = $('#edit-form');
+  const t = view.editing;
+  $('#acct-row').hidden = !state.accounts.length || !t;
+  if (!state.accounts.length || !t) return;
+  const moving = view.editKind === 'transfer' || view.editKind === 'saving';
+  const probe = { ...t, merchant: f.merchant.value, card: f.card.value, kind: view.editKind, accountId: f.accountId.value || null, toAccountId: null };
+  const opts = (selected, derived) => `<option value="">${derived ? `${ui.esc(ui.accountLabel(derived))} · erkannt` : 'keins'}</option>`
+    + state.accounts.map((a) => `<option value="${ui.esc(a.id)}"${a.id === selected ? ' selected' : ''}>${ui.esc(ui.accountLabel(a))}</option>`).join('');
+  const from = f.accountId.dataset.filled ? f.accountId.value || null : t.accountId;
+  const to = f.toAccountId.dataset.filled ? f.toAccountId.value || null : t.toAccountId;
+  f.accountId.innerHTML = opts(from, accountFor({ ...probe, accountId: null }, state.accounts));
+  f.toAccountId.innerHTML = opts(to, counterFor(probe, state.accounts));
+  f.accountId.dataset.filled = '1';
+  f.toAccountId.dataset.filled = '1';
+  $('#to-field').hidden = !moving;
+  $('#acct-cap').textContent = moving ? 'von' : 'konto';
 }
 
 function openEditor(id) {
@@ -417,6 +469,8 @@ function openEditor(id) {
   f.categoryId.innerHTML = `${ui.categoryOptions(t.categoryId)}<optgroup label="Zählt nicht"><option value="__transfer">Umbuchung (eigene Konten)</option></optgroup>`;
   f.note.value = t.note;
   f.excluded.checked = !!t.excluded;
+  delete f.accountId.dataset.filled;
+  delete f.toAccountId.dataset.filled;
   setEditKind(kindOf(t));
   if (foreign) $('#edit-amount-cap').textContent = `betrag (${t.currency.toLowerCase()})`;
   const ml = $('#edit-merchant');
@@ -438,8 +492,18 @@ function openEditor(id) {
 function updateOwnOffer() {
   const f = $('#edit-form');
   if (!view.editing) return;
+  const to = state.accounts.find((a) => a.id === f.toAccountId.value);
+  const moving = view.editKind === 'transfer' || view.editKind === 'saving';
+  // Gegenkonto von Hand gewählt: den Namen an diesem Konto merken, damit es beim nächsten Mal von selbst passt.
+  if (moving && to && f.merchant.value.trim()) {
+    const probe = { merchant: f.merchant.value, card: f.card.value, kind: view.editKind, accountId: f.accountId.value || null, toAccountId: null };
+    $('#own-text').textContent = `künftig an „${ui.accountLabel(to)}“ erkennen`;
+    $('#own-offer').hidden = counterFor(probe, state.accounts)?.id === to.id;
+    return;
+  }
   const probe = { merchant: f.merchant.value, card: f.card.value, kind: 'expense' };
-  $('#own-offer').hidden = !(view.editKind === 'transfer' && f.merchant.value.trim() && !isOwnAccountMove(probe, state.settings.ownAccounts));
+  $('#own-text').textContent = 'als eigenes Konto merken, künftig immer Umbuchung';
+  $('#own-offer').hidden = !(view.editKind === 'transfer' && f.merchant.value.trim() && !isOwnAccountMove(probe, own()));
 }
 
 function updateRuleOffer() {
@@ -486,6 +550,8 @@ async function saveEditor() {
     ...t, id, merchant: f.merchant.value, amountCents: cents, kind, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
+    accountId: state.accounts.length ? f.accountId.value || null : t.accountId,
+    toAccountId: state.accounts.length && (kind === 'transfer' || kind === 'saving') ? f.toAccountId.value || null : null,
   });
   if (!next) return false;
   // Neue Buchung ohne Kategorie: die Regeln dürfen einordnen.
@@ -493,12 +559,18 @@ async function saveEditor() {
   state.transactions = sortTransactions([...state.transactions.filter((x) => x.id !== id), next]);
   await saveTransactions([next]);
 
-  const own = f.ownPattern.value.trim();
-  if (kind === 'transfer' && !$('#own-offer').hidden && f.makeOwn.checked && own) {
-    state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, own] });
+  const ownName = f.ownPattern.value.trim();
+  const toAcc = state.accounts.find((a) => a.id === next.toAccountId);
+  if (toAcc && !$('#own-offer').hidden && f.makeOwn.checked && ownName) {
+    state.accounts = state.accounts.map((a) => (a.id === toAcc.id ? sanitizeAccount({ ...a, match: [...a.match, ownName] }) : a));
+    await saveAccounts();
+    const n = await applyTransfers();
+    undoable(`„${ownName}“ gehört jetzt zu ${ui.accountLabel(toAcc)}${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
+  } else if (kind === 'transfer' && !$('#own-offer').hidden && f.makeOwn.checked && ownName) {
+    state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, ownName] });
     await db.setMeta('settings', state.settings);
     const n = await applyTransfers();
-    undoable(`„${own}“ ist jetzt ein eigenes Konto${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
+    undoable(`„${ownName}“ ist jetzt ein eigenes Konto${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
   } else if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
     const { rules, rule } = upsertRule(state.rules, f.rulePattern.value, cat, `u-${Date.now().toString(36)}`);
     state.rules = rules;
@@ -761,6 +833,243 @@ async function restoreDefaultRules() {
   undoable(`${missing.length} Vorgaben wiederhergestellt${n ? `, ${n} Buchungen eingeordnet` : ''}`, snap);
 }
 
+// ---------- Konten ----------
+/** Zinssatz aus der Eingabe: „2,5“ oder „2,5 %“ → 250 Basispunkte; leer → null; Unsinn → undefined. */
+function parseRate(text) {
+  const v = String(text || '').replace('%', '').trim().replace(',', '.');
+  if (!v) return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n < 100 ? Math.round(n * 100) : undefined;
+}
+
+function openAccount(id) { view.accountId = id; selectTab('account'); }
+
+function setAccountType(type) {
+  view.accountType = type;
+  for (const b of document.querySelectorAll('#account-type [data-atype]')) b.setAttribute('aria-pressed', String(b.dataset.atype === type));
+  $('#rate-field').hidden = type === 'depot';
+}
+
+/** Konto bearbeiten oder neu anlegen (ohne Vorlage). */
+function openAccountEditor(id) {
+  const a = id ? state.accounts.find((x) => x.id === id) : null;
+  view.accountEditing = a;
+  const f = $('#account-form-sheet');
+  f.bank.value = a ? a.bank : '';
+  f.name.value = a ? a.name : '';
+  f.rate.value = a?.rateBp ? ui.rateText(a.rateBp) : '';
+  f.match.value = a ? a.match.join(', ') : '';
+  f.main.checked = !!a?.main;
+  f.other.checked = !!a?.other;
+  setAccountType(a ? a.type : 'konto');
+  $('#account-delete').hidden = !a;
+  $('#account-title').textContent = a ? 'konto ändern' : 'neues konto';
+  $('#account-error').hidden = true;
+  openSheet($('#account-dialog'));
+  if (!a) f.bank.focus();
+}
+
+async function saveAccountEditor() {
+  const f = $('#account-form-sheet');
+  const a = view.accountEditing;
+  const err = (t) => { $('#account-error').textContent = t; $('#account-error').hidden = false; return false; };
+  if (!f.name.value.trim()) return err('Bitte einen Namen angeben, z. B. Girokonto.');
+  const rateBp = view.accountType === 'depot' ? null : parseRate(f.rate.value);
+  if (rateBp === undefined) return err('Zinsen bitte als Zahl angeben, z. B. 2,5.');
+  const snap = snapshot();
+  const next = sanitizeAccount({
+    ...(a || { balance: null }), id: a ? a.id : newAccountId(), bank: f.bank.value, name: f.name.value, type: view.accountType, rateBp,
+    match: f.match.value.split(','), main: f.main.checked, other: f.other.checked,
+  });
+  state.accounts = a ? state.accounts.map((x) => (x.id === a.id ? next : x)) : [...state.accounts, next];
+  await saveAccounts();
+  const n = await applyTransfers();
+  render();
+  undoable(`${a ? 'Konto gespeichert' : `„${next.name}“ angelegt`}${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
+  return true;
+}
+
+/** Konto löschen: Buchungen bleiben, verlieren nur die Zuordnung (von Hand gewählte zeigen dann wieder auf „erkannt“). */
+async function deleteAccountEditor() {
+  const a = view.accountEditing;
+  if (!a) return;
+  closeSheet($('#account-dialog'));
+  const snap = snapshot();
+  state.accounts = state.accounts.filter((x) => x.id !== a.id);
+  const changed = state.transactions.filter((t) => t.accountId === a.id || t.toAccountId === a.id)
+    .map((t) => ({ ...t, accountId: t.accountId === a.id ? null : t.accountId, toAccountId: t.toAccountId === a.id ? null : t.toAccountId }));
+  const byId = new Map(changed.map((t) => [t.id, t]));
+  state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
+  state.positions = state.positions.filter((p) => p.accountId !== a.id);
+  await saveTransactions(changed);
+  await saveAccounts();
+  await savePositions();
+  if (view.tab === 'account') selectTab('accounts'); else render();
+  undoable(`„${a.name}“ gelöscht, die Buchungen bleiben`, snap);
+}
+
+function openTemplate(bank = null) {
+  view.tplBank = bank;
+  ui.renderTemplate($('#tpl-body'), state, bank);
+  openSheet($('#tpl-dialog'));
+}
+
+async function saveTemplate() {
+  const t = BANK_TEMPLATES[view.tplBank];
+  if (!t) return;
+  const f = $('#tpl-form');
+  const picks = t.accounts.map((x, i) => ({ x, i })).filter(({ i }) => f[`pick-${i}`]?.checked && !f[`pick-${i}`].disabled);
+  if (!picks.length) { closeSheet($('#tpl-dialog')); return; }
+  const snap = snapshot();
+  const created = picks.map(({ x, i }, k) => sanitizeAccount({
+    id: newAccountId(k), bank: t.bank, name: x.name, type: x.type, main: !!x.main && !state.accounts.some((a) => a.main),
+    other: !!x.other, match: x.match || [], rateBp: parseRate(f[`rate-${i}`]?.value) ?? null,
+  }));
+  state.accounts = [...state.accounts, ...created];
+  await saveAccounts();
+  const n = await applyTransfers();
+  closeSheet($('#tpl-dialog'), 'save');
+  if (view.tab !== 'accounts') selectTab('accounts'); else render();
+  undoable(`${t.bank}: ${created.length} ${created.length === 1 ? 'Konto' : 'Konten'} angelegt${n ? `, ${n} Umbuchungen erkannt` : ''}`, snap);
+}
+
+function openBalanceEditor(id) {
+  const a = state.accounts.find((x) => x.id === id);
+  if (!a) return;
+  view.accountEditing = a;
+  const f = $('#balance-form');
+  f.amount.value = a.balance ? ui.amountInput(a.balance.cents) : '';
+  f.date.value = clock().today;
+  $('#balance-title').textContent = `stand ${a.name.toLowerCase()}`;
+  $('#balance-hint').textContent = a.type === 'depot'
+    ? 'Der Wert des Depots, wie ihn deine Bank zeigt.'
+    : 'Wie in der Banking-App. Buchungen nach diesem Tag rechnet Taler dazu.';
+  $('#balance-error').hidden = true;
+  openSheet($('#balance-dialog'));
+  f.amount.focus();
+}
+
+async function saveBalanceEditor() {
+  const f = $('#balance-form');
+  const a = view.accountEditing;
+  const amount = parseAmount(f.amount.value);
+  if (!amount || !f.date.value) { $('#balance-error').textContent = 'Bitte Betrag und Tag angeben.'; $('#balance-error').hidden = false; return false; }
+  const snap = snapshot();
+  const next = { ...a, balance: { cents: amount.cents, date: f.date.value, source: 'manual' } };
+  state.accounts = state.accounts.map((x) => (x.id === a.id ? next : x));
+  await saveAccounts();
+  render();
+  undoable('Stand gespeichert', snap);
+  return true;
+}
+
+// ---------- Depots ----------
+/** Stück aus der Eingabe („12,5“, „1.234,567“) in Millionstel; leer → 0; Unsinn → null. */
+const parseUnits = (text) => (String(text || '').trim() ? quantityIn(`Stück ${text.trim()}`) : 0);
+
+function setPositionKind(kind) {
+  view.positionKind = kind;
+  for (const b of document.querySelectorAll('#position-kind [data-pkind]')) b.setAttribute('aria-pressed', String(b.dataset.pkind === kind));
+}
+
+/** Position eintragen oder ändern. Bei einer bestehenden stehen Stück und Kaufwert inklusive der Sparplan-Käufe bis heute. */
+function openPositionEditor(id, { accountId = null, isin = '', name = '' } = {}) {
+  const p = id ? state.positions.find((x) => x.id === id) : null;
+  const acc = state.accounts.find((a) => a.id === (p ? p.accountId : accountId));
+  if (!acc) return;
+  view.positionEditing = { p, accountId: acc.id };
+  const v = p ? positionValue(p, state.transactions, state.accounts, state.settings.currency) : null;
+  const f = $('#position-form');
+  f.name.value = p ? p.name : name;
+  f.isin.value = p ? p.isin : isin;
+  f.units.value = v ? ui.unitsText(v.unitsMicro) : '';
+  f.cost.value = v && v.costCents ? ui.amountInput(v.costCents) : '';
+  f.price.value = p?.priceCents != null ? ui.amountInput(p.priceCents) : '';
+  f.priceDate.value = p?.priceDate || clock().today;
+  f.plan.checked = p ? p.plan : !!isin;
+  setPositionKind(p ? p.kind : 'etf');
+  $('#position-hint').textContent = `im ${acc.name === 'Depot' ? `Depot von ${acc.bank}` : acc.name}`;
+  $('#position-title').textContent = p ? 'position ändern' : 'aktie oder etf';
+  $('#position-delete').hidden = !p;
+  $('#position-error').hidden = true;
+  openSheet($('#position-dialog'));
+  if (!p && !name) f.name.focus();
+}
+
+async function savePositionEditor() {
+  const f = $('#position-form');
+  const { p, accountId } = view.positionEditing;
+  const err = (t) => { $('#position-error').textContent = t; $('#position-error').hidden = false; return false; };
+  const units = parseUnits(f.units.value);
+  const cost = f.cost.value.trim() ? parseAmount(f.cost.value) : { cents: 0 };
+  const price = f.price.value.trim() ? parseAmount(f.price.value) : null;
+  if (!f.name.value.trim()) return err('Bitte einen Namen angeben.');
+  if (units === null) return err('Stück bitte als Zahl angeben, z. B. 12,5.');
+  if (!cost || (f.price.value.trim() && !price)) return err('Beträge bitte als Zahl angeben, z. B. 1.250,00.');
+  const today = clock().today;
+  const snap = snapshot();
+  const next = sanitizePosition({
+    id: p ? p.id : `p-${Date.now().toString(36)}`, accountId, name: f.name.value, isin: f.isin.value, kind: view.positionKind,
+    unitsMicro: units, costCents: Math.abs(cost.cents), date: today,
+    priceCents: price ? Math.abs(price.cents) : p?.priceCents ?? null, priceDate: price ? f.priceDate.value || today : p?.priceDate ?? null,
+    plan: f.plan.checked,
+  });
+  if (!next) return err('Bitte Name und Datum prüfen.');
+  state.positions = p ? state.positions.map((x) => (x.id === p.id ? next : x)) : [...state.positions, next];
+  await savePositions();
+  render();
+  undoable(p ? 'Position gespeichert' : `„${next.name}“ eingetragen`, snap);
+  return true;
+}
+
+async function deletePositionEditor() {
+  const { p } = view.positionEditing;
+  if (!p) return;
+  closeSheet($('#position-dialog'));
+  const snap = snapshot();
+  state.positions = state.positions.filter((x) => x.id !== p.id);
+  await savePositions();
+  render();
+  undoable(`„${p.name}“ gelöscht`, snap);
+}
+
+function openPrices(accountId) {
+  view.pricesAccount = accountId;
+  ui.renderPrices($('#prices-body'), state, accountId, clock().today);
+  openSheet($('#prices-dialog'));
+}
+
+async function savePrices() {
+  const f = $('#prices-form');
+  const date = f.date.value || clock().today;
+  const updates = new Map();
+  for (const p of state.positions.filter((x) => x.accountId === view.pricesAccount)) {
+    const v = f[`price-${p.id}`]?.value.trim();
+    if (!v) continue;
+    const a = parseAmount(v);
+    if (!a) { toast(`Kurs für „${p.name}“ bitte als Zahl angeben`); return false; }
+    updates.set(p.id, { ...p, priceCents: Math.abs(a.cents), priceDate: date });
+  }
+  if (!updates.size) return true;
+  const snap = snapshot();
+  state.positions = state.positions.map((p) => updates.get(p.id) || p);
+  await savePositions();
+  render();
+  undoable(`${updates.size} ${updates.size === 1 ? 'Kurs' : 'Kurse'} gespeichert`, snap);
+  return true;
+}
+
+/** Buchungen eines Kontos in der Liste: eigene und Umbuchungen dorthin, alle Monate. */
+function showAccountList(id) {
+  const a = state.accounts.find((x) => x.id === id);
+  if (!a) return;
+  const ids = new Set(state.transactions.filter((t) => accountFor(t, state.accounts)?.id === a.id || counterFor(t, state.accounts)?.id === a.id).map((t) => t.id));
+  Object.assign(view, { listKind: undefined, listCats: [], listSources: [], hideExcluded: false, listMerchant: null, query: '', listMonth: null });
+  view.listAccount = { id: a.id, name: a.name, ids };
+  view.from = 'account';
+  selectTab('list', { keepFrom: true });
+}
+
 // ---------- Sheets: Hintergrund tippen oder nach unten wischen schließt ----------
 function openSheet(d) { clearUndo(); d.style.transform = ''; d.returnValue = ''; d.showModal(); }
 function closeSheet(d, value = 'cancel') { if (d.open) d.close(value); }
@@ -798,7 +1107,7 @@ function bind() {
   for (const a of document.querySelectorAll('.tabbar a')) {
     a.addEventListener('click', (e) => {
       e.preventDefault();
-      if (a.dataset.tab === 'list') { view.listCats = []; view.listMerchant = null; }
+      if (a.dataset.tab === 'list') { view.listCats = []; view.listMerchant = null; view.listAccount = null; }
       selectTab(a.dataset.tab);
     });
   }
@@ -816,7 +1125,7 @@ function bind() {
     if (act === 'filter-cat' || act === 'filter-merchant' || act === 'show-merchant') {
       const merchant = act !== 'filter-cat';
       // Händler: alle Zahlungen dort, nicht nur dieser Monat.
-      Object.assign(view, { listKind: undefined, listSources: [], hideExcluded: false, listCats: merchant ? [] : [b.dataset.cat || null] });
+      Object.assign(view, { listKind: undefined, listSources: [], hideExcluded: false, listCats: merchant ? [] : [b.dataset.cat || null], listAccount: null });
       view.listMerchant = merchant ? b.dataset.merchant : null;
       view.listMonth = merchant ? null : view.month;
       view.lastListMonth = view.month;
@@ -841,13 +1150,23 @@ function bind() {
     if (act === 'open-filter') { renderFilter(); openSheet($('#filter-dialog')); }
     if (act === 'clear-merchant') { view.listMerchant = null; render(); }
     if (act === 'kind-list') {
-      Object.assign(view, { listKind: b.dataset.kind, listCats: [], listSources: [], hideExcluded: false, listMerchant: null, query: '' });
+      Object.assign(view, { listKind: b.dataset.kind, listCats: [], listSources: [], hideExcluded: false, listMerchant: null, query: '', listAccount: null });
       view.listMonth = view.month;
       view.lastListMonth = view.month;
       view.from = 'overview';
       selectTab('list', { keepFrom: true });
     }
     if (act === 'edit') openEditor(b.dataset.id);
+    if (act === 'open-account') openAccount(b.dataset.id);
+    if (act === 'template') openTemplate(b.dataset.bank || null);
+    if (act === 'new-account') openAccountEditor(null);
+    if (act === 'edit-account') openAccountEditor(b.dataset.id);
+    if (act === 'edit-balance') openBalanceEditor(b.dataset.id);
+    if (act === 'account-list') showAccountList(b.dataset.id);
+    if (act === 'new-position') openPositionEditor(null, { accountId: b.dataset.account, isin: b.dataset.isin || '', name: b.dataset.name || '' });
+    if (act === 'edit-position') openPositionEditor(b.dataset.id);
+    if (act === 'edit-prices') openPrices(b.dataset.id);
+    if (act === 'clear-account') { view.listAccount = null; if (view.from === 'account') view.from = null; render(); }
     if (act === 'sort') openSorter();
     if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
     if (act === 'edit-rule') openRuleEditor(b.dataset.id);
@@ -869,7 +1188,7 @@ function bind() {
     if (act === 'export-json') await saveBackup();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten.', 'Alles löschen', { danger: true })) {
       await db.clear();
-      Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [] });
+      Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [], accounts: [], positions: [] });
       setCategories(DEFAULT_CATEGORIES);
       view.budgetShow = null;
       await saveRules();
@@ -1001,8 +1320,11 @@ function bind() {
   });
 
   const f = $('#edit-form');
-  f.merchant.addEventListener('input', updateOwnOffer);
-  f.card.addEventListener('input', updateOwnOffer);
+  const refreshAccounts = () => { fillAccountSelects(); updateOwnOffer(); };
+  f.merchant.addEventListener('input', refreshAccounts);
+  f.card.addEventListener('input', refreshAccounts);
+  f.accountId.addEventListener('change', () => { fillAccountSelects(); updateOwnOffer(); });
+  f.toAccountId.addEventListener('change', updateOwnOffer);
   f.categoryId.addEventListener('change', () => {
     if (f.categoryId.value === '__transfer') { f.categoryId.value = ''; setEditKind('transfer'); return; }
     if (f.categoryId.value) setEditKind(categoryKind(state.categories, f.categoryId.value));
@@ -1030,6 +1352,47 @@ function bind() {
     const b = e.target.closest('[data-ckind]');
     if (b && !b.disabled) setCatKind(b.dataset.ckind, false);
   });
+  const af = $('#account-form-sheet');
+  af.addEventListener('submit', async (e) => {
+    const action = e.submitter?.value;
+    if (action === 'save') { e.preventDefault(); if (await saveAccountEditor()) closeSheet($('#account-dialog'), 'save'); }
+    if (action === 'delete') { e.preventDefault(); await deleteAccountEditor(); }
+  });
+  $('#account-type').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-atype]')?.dataset.atype;
+    if (t) setAccountType(t);
+  });
+  $('#position-form').addEventListener('submit', async (e) => {
+    const action = e.submitter?.value;
+    if (action === 'save') { e.preventDefault(); if (await savePositionEditor()) closeSheet($('#position-dialog'), 'save'); }
+    if (action === 'delete') { e.preventDefault(); await deletePositionEditor(); }
+  });
+  $('#position-kind').addEventListener('click', (e) => {
+    const k = e.target.closest('[data-pkind]')?.dataset.pkind;
+    if (k) setPositionKind(k);
+  });
+  $('#prices-dialog').addEventListener('submit', async (e) => {
+    if (e.submitter?.value !== 'save') return;
+    e.preventDefault();
+    if (await savePrices()) closeSheet($('#prices-dialog'), 'save');
+  });
+  $('#balance-form').addEventListener('submit', async (e) => {
+    if (e.submitter?.value !== 'save') return;
+    e.preventDefault();
+    if (await saveBalanceEditor()) closeSheet($('#balance-dialog'), 'save');
+  });
+  $('#tpl-dialog').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tpl]');
+    if (!b) return;
+    if (b.dataset.tpl === 'other') { closeSheet($('#tpl-dialog')); openAccountEditor(null); return; }
+    view.tplBank = b.dataset.tpl;
+    ui.renderTemplate($('#tpl-body'), state, view.tplBank);
+  });
+  $('#tpl-dialog').addEventListener('submit', async (e) => {
+    if (e.submitter?.value !== 'save') return;
+    e.preventDefault();
+    await saveTemplate();
+  });
   for (const d of document.querySelectorAll('dialog.sheet')) bindSheet(d);
   $('#add-btn').addEventListener('click', () => openEditor(null));
 }
@@ -1056,6 +1419,17 @@ async function start() {
   }
   state.rules = orderRules((await db.allRules()).map(sanitizeRule).filter(Boolean));
   setCategories(withDefaults(sanitizeCategories(await db.getMeta('categories'))));
+  const storedAccounts = await db.getMeta('accounts');
+  state.accounts = sanitizeAccounts(storedAccounts);
+  state.positions = sanitizePositions(await db.getMeta('positions'));
+  // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
+  if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
+    const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);
+    state.accounts = sanitizeAccounts(m.accounts);
+    state.settings = sanitizeSettings({ ...state.settings, ownAccounts: m.ownAccounts });
+    await saveAccounts();
+    await db.setMeta('settings', state.settings);
+  }
   bind();
   let tab = 'overview';
   try { tab = sessionStorage.getItem('taler:tab') || tab; } catch { /* egal */ }

@@ -483,3 +483,27 @@ details.fold > .list { border-top:0; }
 button.kpi.tap { display:block; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--line); border-radius:0; color:inherit; font:inherit; cursor:pointer; padding:var(--s2) 0 0; }
 button.kpi.tap:active { background:var(--sunken); }
 .catbtn.transfer { color:var(--muted); border-style:dashed; }
+
+/* Konten: Vermögen als Balken (Konten Tinte, Tagesgeld Petrol, Depots Gold), Banken mit Summe, Geldfluss. */
+.split.wealth > span { display:block; }
+.t-konto { background:var(--ink); }
+.t-tagesgeld { background:var(--accent); }
+.t-depot { background:#C9971C; }
+.legend { display:flex; flex-wrap:wrap; gap:4px 14px; margin:var(--s1) 0 var(--s3); font-size:calc(13*var(--u)); color:var(--muted); }
+.legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; }
+.bankhead { display:flex; justify-content:space-between; align-items:baseline; gap:var(--s3); }
+.bankhead span:last-child { font:400 calc(14*var(--u)) var(--font-body); text-transform:none; letter-spacing:0; }
+.item.other .t > b, .item.other .n { color:var(--muted); }
+.flow .t > b em { font-style:normal; color:var(--muted); }
+.calc .item { min-height:40px; padding:6px 0; }
+.calc .item.sum .t > b, .calc .item.sum .n { font-weight:600; }
+.tplopt { display:flex; gap:var(--s3); align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--line); cursor:pointer; }
+.tplopt input[type=checkbox] { accent-color:var(--accent); width:20px; height:20px; flex:none; margin-top:2px; }
+.tplopt > span > b { display:block; font-weight:400; }
+.tplopt > span > span { color:var(--muted); font-size:calc(14*var(--u)); }
+.tplopt .inline-input { width:5em; }
+.ruleopt.twoline > span > span { display:block; margin-top:2px; }
+.item .n small { display:block; font-size:calc(13*var(--u)); color:var(--muted); }
+.item .n small.in { color:var(--ok); }
+.kpi .sub .gain { color:var(--ok); }
+.kpi .sub .loss { color:var(--err); }
