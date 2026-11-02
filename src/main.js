@@ -414,7 +414,7 @@ function openEditor(id) {
   f.card.value = t.card;
   f.date.value = t.date;
   f.time.value = t.time || '';
-  f.categoryId.innerHTML = ui.categoryOptions(t.categoryId);
+  f.categoryId.innerHTML = `${ui.categoryOptions(t.categoryId)}<optgroup label="Zählt nicht"><option value="__transfer">Umbuchung (eigene Konten)</option></optgroup>`;
   f.note.value = t.note;
   f.excluded.checked = !!t.excluded;
   setEditKind(kindOf(t));
@@ -531,7 +531,8 @@ async function deleteEditing() {
 }
 
 // ---------- Einordnen ----------
-const sorter = { total: 0, skipped: new Set(), last: null };
+// history: Stapel der Schritte (neuester zuletzt), jeder mit Schnappschuss davor. order: Knopf-Reihenfolge, fest solange das Blatt offen ist.
+const sorter = { total: 0, skipped: new Set(), history: [], order: { expense: [], income: [] } };
 
 /** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol). */
 function sortQueue() {
@@ -544,15 +545,25 @@ function renderSorter() {
   const t = q[0] || null;
   ui.renderSorter($('#sort-body'), state, {
     t, pos: Math.min(sorter.total, Math.max(1, sorter.total - q.length + 1)), total: sorter.total,
-    pattern: t ? suggestPattern(t.merchant) : '', last: sorter.last,
-    cats: categoriesByUse(state.transactions, state.categories, t && kindOf(t) === 'income' ? ['income', 'balance'] : ['expense', 'balance', 'saving']),
+    pattern: t ? suggestPattern(t.merchant) : '', history: sorter.history,
+    cats: sorterCats(t && kindOf(t) === 'income' ? 'income' : 'expense'),
   }, clock());
+}
+
+const SORT_KINDS = { expense: ['expense', 'balance', 'saving'], income: ['income', 'balance'] };
+/** Knöpfe in fester Reihenfolge: beim Öffnen nach Gebrauch sortiert, neu angelegte hinten dran, ausgeblendete fallen weg. */
+function sorterCats(side) {
+  const now = categoriesByUse(state.transactions, state.categories, SORT_KINDS[side]);
+  const order = [...sorter.order[side].filter((id) => now.includes(id)), ...now.filter((id) => !sorter.order[side].includes(id))];
+  sorter.order[side] = order;
+  return order;
 }
 
 function openSorter() {
   clearUndo();
   sorter.skipped = new Set();
-  sorter.last = null;
+  sorter.history = [];
+  sorter.order = { expense: [], income: [] };
   sorter.total = sortQueue().length;
   renderSorter();
   openSheet($('#sort-dialog'));
@@ -562,18 +573,19 @@ async function sortInto(categoryId) {
   const t = sortQueue()[0];
   if (!t) return;
   const snap = snapshot();
-  const next = { ...t, categoryId, manualCategory: true, kind: categoryKind(state.categories, categoryId) };
+  const next = categoryId === null ? { ...t, categoryId: null, manualCategory: false, kind: 'transfer' }
+    : { ...t, categoryId, manualCategory: true, kind: categoryKind(state.categories, categoryId) };
   state.transactions = state.transactions.map((x) => (x.id === t.id ? next : x));
   await saveTransactions([next]);
   let n = 0;
   const pattern = $('#sort-pattern')?.value.trim();
-  if ($('#sort-make-rule')?.checked && pattern) {
+  if (categoryId !== null && $('#sort-make-rule')?.checked && pattern) {
     const { rules, rule } = upsertRule(state.rules, pattern, categoryId, `u-${Date.now().toString(36)}`);
     state.rules = rules;
     await db.putRules([rule]);
     n = await reapplyRules();
   }
-  sorter.last = { snap, text: `${t.merchant} → ${ui.catLabel(categoryId)}${n ? ` (+${n})` : ''}` };
+  sorter.history.push({ snap, text: `${t.merchant} → ${categoryId === null ? 'Umbuchung' : ui.catLabel(categoryId)}${n ? ` (+${n})` : ''}` });
   renderSorter();
   render();
 }
@@ -582,7 +594,13 @@ async function sorterAction(act) {
   if (act === 'close') { closeSheet($('#sort-dialog')); render(); return; }
   if (act === 'new-cat') { const t = sortQueue()[0]; openCatEditor(null, { kind: t && kindOf(t) === 'income' ? 'income' : 'expense', forSort: true }); return; }
   if (act === 'skip') { const t = sortQueue()[0]; if (t) sorter.skipped.add(t.id); }
-  if (act === 'undo' && sorter.last) { await restore(sorter.last.snap); sorter.last = null; render(); }
+  if (act === 'transfer') { await sortInto(null); return; }
+  if (act === 'undo' && sorter.history.length) {
+    const step = sorter.history.pop();
+    await restore(step.snap);
+    // Übersprungene bleiben übersprungen; die zurückgenommene Zahlung kommt wieder dran.
+    render();
+  }
   renderSorter();
 }
 
@@ -822,6 +840,13 @@ function bind() {
     if (act === 'list-sort') { view.sort = { new: 'old', old: 'big', big: 'new' }[view.sort]; render(); }
     if (act === 'open-filter') { renderFilter(); openSheet($('#filter-dialog')); }
     if (act === 'clear-merchant') { view.listMerchant = null; render(); }
+    if (act === 'kind-list') {
+      Object.assign(view, { listKind: b.dataset.kind, listCats: [], listSources: [], hideExcluded: false, listMerchant: null, query: '' });
+      view.listMonth = view.month;
+      view.lastListMonth = view.month;
+      view.from = 'overview';
+      selectTab('list', { keepFrom: true });
+    }
     if (act === 'edit') openEditor(b.dataset.id);
     if (act === 'sort') openSorter();
     if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
@@ -979,6 +1004,7 @@ function bind() {
   f.merchant.addEventListener('input', updateOwnOffer);
   f.card.addEventListener('input', updateOwnOffer);
   f.categoryId.addEventListener('change', () => {
+    if (f.categoryId.value === '__transfer') { f.categoryId.value = ''; setEditKind('transfer'); return; }
     if (f.categoryId.value) setEditKind(categoryKind(state.categories, f.categoryId.value));
     updateRuleOffer();
   });

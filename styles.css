@@ -479,3 +479,7 @@ details.fold > .list { border-top:0; }
 .settlehead { padding:var(--s3) var(--s1) var(--s1); color:var(--muted); list-style:none; }
 .item .n.open { color:var(--warn); }
 #cat-kind button:disabled { opacity:.45; cursor:default; }
+
+button.kpi.tap { display:block; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--line); border-radius:0; color:inherit; font:inherit; cursor:pointer; padding:var(--s2) 0 0; }
+button.kpi.tap:active { background:var(--sunken); }
+.catbtn.transfer { color:var(--muted); border-style:dashed; }
