@@ -63,9 +63,11 @@ export const CATEGORY_KINDS = ['expense', 'income', 'balance', 'saving'];
  * @property {'auto'|'fixed'|'off'} budgetMode  auto = Einnahmen minus Sparpläne aus den Kontoauszügen
  * @property {string|null} budgetSince  YYYY-MM, ab dem das Budget gilt (für den Rückblick)
  * @property {string} currency
+ * @property {string[]} ownAccounts  eigene Konten (Name, IBAN, eigener Name): Buchungen dorthin sind Umbuchungen
  */
 
-export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, budgetMode: 'auto', budgetSince: null, currency: 'EUR' });
+export const DEFAULT_OWN_ACCOUNTS = Object.freeze(['Trade Republic', 'ING']);
+export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, budgetMode: 'auto', budgetSince: null, currency: 'EUR', ownAccounts: DEFAULT_OWN_ACCOUNTS });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -142,6 +144,8 @@ export function sanitizeSettings(raw) {
     budgetMode: mode === 'fixed' && !budget ? 'auto' : mode,
     budgetSince: budget && /^\d{4}-\d{2}$/.test(s.budgetSince) ? s.budgetSince : null,
     currency: /^[A-Z]{3}$/.test(s.currency) ? s.currency : DEFAULT_SETTINGS.currency,
+    ownAccounts: Array.isArray(s.ownAccounts)
+      ? [...new Set(s.ownAccounts.map((a) => str(a, 60)).filter(Boolean))].slice(0, 30) : [...DEFAULT_OWN_ACCOUNTS],
   };
 }
 

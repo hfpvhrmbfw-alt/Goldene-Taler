@@ -441,9 +441,9 @@ export function renderList(el, state, view, clock) {
       const kind = kindOf(t);
       const dim = t.excluded || kind === 'transfer';
       const sub = [
-        t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : kind !== 'expense' ? KIND_LABELS[kind] : '',
+        t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : '',
         g.date ? '' : dayLabel(t.date, clock.today, clock.yesterday),
-        kind === 'expense' ? catLabel(t.categoryId) : '', base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
+        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind], base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
       ].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
@@ -554,6 +554,16 @@ export function renderSettings(el, state, view, info, clock) {
     ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="categories"', title: 'Kategorien', sub: `${plural(state.categories.filter((c) => !c.hidden).length, 'Kategorie', 'Kategorien')}${state.categories.some((c) => c.id.startsWith('c-')) ? ` · ${state.categories.filter((c) => c.id.startsWith('c-')).length} eigene` : ''}`, chev: true })}
     ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="rules"', title: 'Regeln', sub: `${custom} eigene · ${std} vorgegeben`, chev: true })}
   </ul>
+
+  ${head('eigene konten')}
+  <p class="muted small">Geld zwischen diesen Konten ist eine Umbuchung und zählt weder als Einnahme noch als Ausgabe. Dein Name oder deine IBAN passen auch.</p>
+  <ul class="list">
+    ${state.settings.ownAccounts.map((a) => item({ tag: 'button', attrs: `data-act="remove-account" data-name="${esc(a)}"`, title: esc(a), n: 'entfernen', nCls: 'muted' })).join('')}
+  </ul>
+  <form class="inlineform" id="account-form">
+    <label class="field"><span class="visually-hidden">Konto, Name oder IBAN</span><input name="account" placeholder="z. B. Tagesgeld oder IBAN" autocomplete="off" maxlength="60"></label>
+    <button class="btn">hinzufügen</button>
+  </form>
 
   ${head('hilfe')}
   <details id="setup-details"><summary>kurzbefehl einrichten</summary><div>

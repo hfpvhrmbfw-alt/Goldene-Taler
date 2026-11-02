@@ -529,3 +529,8 @@ test('yearSummary: Einnahmen und Sparen im Jahr', () => {
   assert.equal(y.savingCents, 5000);
   assert.equal(y.totalCents, 9000);
 });
+
+test('sanitizeSettings: eigene Konten, vorbelegt mit Trade Republic und ING', () => {
+  assert.deepEqual(M.sanitizeSettings({}).ownAccounts, ['Trade Republic', 'ING']);
+  assert.deepEqual(M.sanitizeSettings({ ownAccounts: [' Tagesgeld ', 'Tagesgeld', '', 3] }).ownAccounts, ['Tagesgeld']);
+});

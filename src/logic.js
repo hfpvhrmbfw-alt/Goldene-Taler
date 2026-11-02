@@ -599,26 +599,30 @@ export function findCrossDuplicates(existing, incoming) {
   return dupes;
 }
 
+/** Konto hinter einer Kartenangabe: „ING Visa“ und „ING“ sind dasselbe Girokonto. */
+const accountOf = (t) => String(t.card || '').trim().split(/\s+/)[0].toLowerCase();
+
 /**
  * Umbuchungen zwischen eigenen Konten: Auf einem Konto geht Geld raus, auf einem anderen kommt derselbe Betrag
- * höchstens drei Tage später oder früher rein. Gepaart werden nur Buchungen aus Kontoauszügen von verschiedenen Konten
- * (Spalte `card`), je Buchung höchstens ein Partner, das nächste Datum gewinnt. Beide Seiten werden Umbuchungen.
+ * höchstens sieben Tage früher oder später rein (Lastschriften bucht die Bank oft erst nach dem Wochenende ab).
+ * Gepaart werden Buchungen aus Kontoauszügen und Kurzbefehl von verschiedenen Konten, je Buchung höchstens ein Partner,
+ * das nächste Datum gewinnt. Beide Seiten werden Umbuchungen.
  * Bereits bekannte Buchungen kommen nur als Partner infrage, nicht neu in `incoming`.
  * @param {import('./model.js').Transaction[]} existing
  * @param {import('./model.js').Transaction[]} incoming  neue Buchungen
  * @returns {Set<string>} IDs aus existing und incoming, die Umbuchungen sind
  */
 export function findTransfers(existing, incoming) {
-  const open = (t) => t.source === 'statement' && !t.excluded && (kindOf(t) === 'expense' || kindOf(t) === 'income');
+  const open = (t) => (t.source === 'statement' || t.source === 'shortcut') && !t.excluded && (kindOf(t) === 'expense' || kindOf(t) === 'income');
   const pool = [...existing.filter(open), ...incoming.filter(open)];
   const fresh = new Set(incoming.map((t) => t.id));
   const pairs = [];
   for (const a of pool) {
     if (!fresh.has(a.id)) continue;
     for (const b of pool) {
-      if (b.card === a.card || b.currency !== a.currency || b.amountCents !== -a.amountCents) continue;
+      if (accountOf(b) === accountOf(a) || b.currency !== a.currency || b.amountCents !== -a.amountCents) continue;
       const d = Math.abs(daysBetween(a.date, b.date));
-      if (d <= 3) pairs.push({ d, a, b });
+      if (d <= 7) pairs.push({ d, a, b });
     }
   }
   const used = new Set();
@@ -627,6 +631,34 @@ export function findTransfers(existing, incoming) {
     if (used.has(a.id) || used.has(b.id)) continue;
     used.add(a.id); used.add(b.id); hits.add(a.id); hits.add(b.id);
   }
+  return hits;
+}
+
+const squash = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+const wordIn = (text, word) => {
+  const w = word.toLowerCase().trim();
+  if (!w) return false;
+  const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${esc}($|[^\\p{L}\\p{N}])`, 'u').test(String(text || '').toLowerCase())
+    || (w.length >= 8 && squash(text).includes(squash(w)));
+};
+
+/**
+ * Nennt die Buchung ein eigenes Konto als Gegenseite (z. B. bei der ING „Trade Republic“)? Dann ist sie eine Umbuchung,
+ * auch wenn der Auszug des anderen Kontos fehlt. Ein Name, der zum eigenen Konto der Buchung passt, zählt nicht.
+ * Lange Einträge (IBAN) passen auch ohne Leerzeichen.
+ * @param {import('./model.js').Transaction} t
+ * @param {string[]} accounts  Namen, IBANs oder der eigene Name
+ */
+export function isOwnAccountMove(t, accounts) {
+  if (t.excluded || (kindOf(t) !== 'expense' && kindOf(t) !== 'income')) return false;
+  return accounts.some((a) => !wordIn(t.card, a) && wordIn(t.merchant, a));
+}
+
+/** Alle Buchungen, die Umbuchungen sein sollten (eigenes Konto genannt oder Gegenstück gefunden). Für den einmaligen Durchlauf über den Bestand. */
+export function transfersIn(transactions, accounts) {
+  const hits = findTransfers([], transactions);
+  for (const t of transactions) if (isOwnAccountMove(t, accounts)) hits.add(t.id);
   return hits;
 }
 

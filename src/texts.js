@@ -1,6 +1,6 @@
 // Beschriftungen zu den IDs aus dem Modell und Meldungen. Gehört zur Oberfläche.
 
-export const KIND_LABELS = { expense: 'Ausgabe', income: 'Einnahme', saving: 'Sparen', transfer: 'Umbuchung' };
+export const KIND_LABELS = { expense: 'Ausgabe', income: 'Einnahme', balance: 'Gleicht sich aus', saving: 'Sparen', transfer: 'Umbuchung' };
 /** Überschriften der Kategoriengruppen und Namen der Arten (Umschalter). */
 export const CATEGORY_GROUPS = { expense: 'Ausgaben', income: 'Einnahmen', balance: 'Gleicht sich aus', saving: 'Sparen' };
 export const CATEGORY_KIND_NAMES = { expense: 'ausgabe', income: 'einnahme', balance: 'gleicht sich aus', saving: 'sparen' };

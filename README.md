@@ -16,8 +16,10 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking, auch 
 
 5. **Kontoauszug einlesen** (Einstellungen): PDF-Kontoauszug von Trade Republic oder ING (Girokonto)
    auswählen. Übernommen wird jede Zeile mit ihrer **Art**: Ausgabe (Karte, Lastschrift, Überweisung, Dauerauftrag),
-   Einnahme (Gehalt, Einzahlung, Gutschrift, Zinsen), Sparen (Sparplan, zählt nicht als Ausgabe) oder Umbuchung (gleicher
-   Betrag raus und rein auf zwei Konten, höchstens drei Tage auseinander; zählt nirgends). Die Art lässt sich in jeder
+   Einnahme (Gehalt, Einzahlung, Gutschrift, Zinsen), Sparen (Sparplan, zählt nicht als Ausgabe) oder Umbuchung (zählt
+   nirgends). Umbuchung heißt: gleicher Betrag raus und rein auf zwei Konten, höchstens sieben Tage auseinander (auch
+   Apple-Pay-Zeilen), oder die Gegenseite ist ein **eigenes Konto** (Einstellungen, vorbelegt mit Trade Republic und ING,
+   ergänzbar um Tagesgeld, eigenen Namen oder IBAN; auch aus einer Buchung heraus mit „als eigenes Konto merken“). Die Art lässt sich in jeder
    Buchung ändern. Wer Einnahmen hat, sieht oben in der Übersicht, was nach Einnahmen, Ausgaben und Sparen übrig ist.
    Buchungen lassen sich nach Art, Betrag und Datum sortieren und nach Kategorie und Herkunft filtern. Was der Kurzbefehl schon erfasst hat (gleicher Betrag, Auszug höchstens einen Tag
    früher oder fünf Tage später), kommt nicht doppelt, egal in welcher Reihenfolge eingelesen wird. Das PDF liest
@@ -30,6 +32,12 @@ Unter den Kategorien zeigt die Übersicht den **Jahresblick** (zwölf Monate, an
 wiederkehrende Zahlungen (gleicher Betrag in drei Monaten hintereinander). Ein Händler führt zu all seinen Zahlungen
 mit Summe für das Jahr und insgesamt. In den ersten zehn Tagen eines Monats steht oben ein **Rückblick** auf den Vormonat.
 Buchungen, die keine eigene Ausgabe sind (für andere ausgelegt, Kaution), lassen sich auf **nicht mitzählen** stellen.
+
+**Kategorien** (Einstellungen › Kategorien) lassen sich anlegen, umbenennen, beim Einordnen ausblenden und
+zusammenlegen, auch direkt beim Einordnen mit „+ neue“. Jede hat eine Art: Ausgabe, Einnahme, **gleicht sich aus**
+(z. B. Dienstwagen: Tanken und Kostenabrechnung heben sich auf, zählen nirgends, ein offener Rest steht gelb in der
+Übersicht) oder Sparen. Das **Monatsbudget** ist automatisch (Einnahmen minus Sparpläne des Monats, bis das Gehalt da
+ist die des Vormonats), ein fester Betrag oder aus.
 
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.

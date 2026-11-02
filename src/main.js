@@ -6,7 +6,7 @@ import {
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
-  categoryKind, mergeCategory,
+  categoryKind, mergeCategory, isOwnAccountMove, transfersIn,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { pdfPages } from './pdf.js';
@@ -233,6 +233,35 @@ function withoutCrossDuplicates(incoming) {
   return { incoming: incoming.filter((t) => !dupes.has(t.id)), dupes: dupes.size };
 }
 
+const toTransfer = (t) => ({ ...t, kind: 'transfer', categoryId: null, manualCategory: false });
+
+/**
+ * Umbuchungen zwischen eigenen Konten in neuen Zeilen finden: Gegenstück auf einem anderen Konto oder ein eigenes Konto als Gegenseite.
+ * Bekannte Gegenstücke werden mit umgestellt (`changed`).
+ */
+function markTransfers(rows) {
+  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
+  const fresh = rows.filter((t) => !known.has(t.id));
+  const marks = findTransfers(state.transactions, fresh);
+  for (const t of fresh) if (isOwnAccountMove(t, state.settings.ownAccounts)) marks.add(t.id);
+  return {
+    incoming: rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t)),
+    changed: state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer),
+  };
+}
+
+/** Vorhandene Buchungen, die ein eigenes Konto nennen (oder ein Gegenstück haben), zu Umbuchungen machen. */
+async function applyTransfers({ pairs = false } = {}) {
+  const hits = pairs ? transfersIn(state.transactions, state.settings.ownAccounts)
+    : new Set(state.transactions.filter((t) => isOwnAccountMove(t, state.settings.ownAccounts)).map((t) => t.id));
+  const changed = state.transactions.filter((t) => hits.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer);
+  if (!changed.length) return 0;
+  const byId = new Map(changed.map((t) => [t.id, t]));
+  state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
+  await saveTransactions(changed);
+  return changed.length;
+}
+
 async function importLog(text, { demo = false } = {}) {
   const snap = snapshot();
   const parsed = parseLog(text, state.settings.currency);
@@ -240,9 +269,13 @@ async function importLog(text, { demo = false } = {}) {
   let dupes = 0;
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
   else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
+  let changed = [];
+  if (!demo) ({ incoming, changed } = markTransfers(incoming));
+  const byId = new Map(changed.map((t) => [t.id, t]));
   const categorized = applyRules(incoming, state.rules, state.categories);
-  const { transactions: merged, added } = mergeTransactions(state.transactions, categorized, state.deletedIds);
+  const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), categorized, state.deletedIds);
   state.transactions = merged;
+  if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
   if (demo) {
     view.importReport = '';
@@ -274,10 +307,7 @@ async function importStatement(file) {
   const snap = snapshot();
   const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
   // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
-  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
-  const marks = findTransfers(state.transactions, rows.filter((t) => !known.has(t.id)));
-  const incoming = rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t));
-  const changed = state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map((t) => ({ ...t, kind: 'transfer', categoryId: null, manualCategory: false }));
+  const { incoming, changed } = markTransfers(rows);
   const byId = new Map(changed.map((t) => [t.id, t]));
   const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), applyRules(incoming, state.rules, state.categories), state.deletedIds);
   state.transactions = merged;
@@ -321,8 +351,9 @@ async function restoreBackup(text) {
   await db.setMeta('initialized', true);
   if (info.lastImport) await db.setMeta('lastImport', info.lastImport);
   if (info.lastBackup) await db.setMeta('lastBackup', info.lastBackup);
+  const n = await applyTransfers({ pairs: true });
   render();
-  toast(r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen');
+  toast(`${r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen'}${n ? `, ${n} Umbuchungen erkannt` : ''}`);
 }
 
 function demoLog() {
@@ -363,6 +394,7 @@ function setEditKind(kind) {
   const f = $('#edit-form');
   f.categoryId.closest('label').hidden = kind === 'transfer';
   if (kind === 'transfer') $('#rule-offer').hidden = true;
+  updateOwnOffer();
   $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : kind === 'balance' ? 'betrag (− = eingegangen)' : 'betrag';
 }
 
@@ -392,6 +424,7 @@ function openEditor(id) {
   ml.dataset.merchant = t.merchant;
   ml.textContent = `alle zahlungen bei ${t.merchant} ›`;
   f.rulePattern.value = suggestPattern(t.merchant);
+  f.ownPattern.value = t.merchant.trim().split(/\s+/).slice(0, 2).join(' ');
   f.makeRule.checked = ruleDefault(state.transactions, f.rulePattern.value);
   $('#rule-offer').hidden = true;
   $('#edit-error').hidden = true;
@@ -399,6 +432,14 @@ function openEditor(id) {
   $('#edit-title').textContent = id ? 'buchung ändern' : 'neue buchung';
   openSheet($('#edit-dialog'));
   if (!id) f.merchant.focus();
+}
+
+/** Bei „umbuchung“: Gegenseite als eigenes Konto merken, damit es künftig von selbst passt. */
+function updateOwnOffer() {
+  const f = $('#edit-form');
+  if (!view.editing) return;
+  const probe = { merchant: f.merchant.value, card: f.card.value, kind: 'expense' };
+  $('#own-offer').hidden = !(view.editKind === 'transfer' && f.merchant.value.trim() && !isOwnAccountMove(probe, state.settings.ownAccounts));
 }
 
 function updateRuleOffer() {
@@ -452,7 +493,13 @@ async function saveEditor() {
   state.transactions = sortTransactions([...state.transactions.filter((x) => x.id !== id), next]);
   await saveTransactions([next]);
 
-  if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
+  const own = f.ownPattern.value.trim();
+  if (kind === 'transfer' && !$('#own-offer').hidden && f.makeOwn.checked && own) {
+    state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, own] });
+    await db.setMeta('settings', state.settings);
+    const n = await applyTransfers();
+    undoable(`„${own}“ ist jetzt ein eigenes Konto${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
+  } else if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
     const { rules, rule } = upsertRule(state.rules, f.rulePattern.value, cat, `u-${Date.now().toString(36)}`);
     state.rules = rules;
     await db.putRules([rule]);
@@ -782,6 +829,13 @@ function bind() {
     if (act === 'edit-cat') openCatEditor(b.dataset.id);
     if (act === 'new-cat') openCatEditor(null);
     if (act === 'budget-mode') await setBudgetMode(b.dataset.mode);
+    if (act === 'remove-account') {
+      const snap = snapshot();
+      state.settings = sanitizeSettings({ ...state.settings, ownAccounts: state.settings.ownAccounts.filter((a) => a !== b.dataset.name) });
+      await db.setMeta('settings', state.settings);
+      render();
+      undoable(`„${b.dataset.name}“ entfernt. Bisherige Umbuchungen bleiben.`, snap);
+    }
     if (act === 'new-rule') openRuleEditor(null);
     if (act === 'restore-std') await restoreDefaultRules();
     if (act === 'demo') await importLog(demoLog(), { demo: true });
@@ -895,6 +949,17 @@ function bind() {
   });
 
   document.addEventListener('submit', async (e) => {
+    if (e.target.id === 'account-form') {
+      e.preventDefault();
+      const name = e.target.account.value.trim();
+      if (!name) return;
+      const snap = snapshot();
+      state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, name] });
+      await db.setMeta('settings', state.settings);
+      const n = await applyTransfers();
+      render();
+      undoable(`„${name}“ hinzugefügt${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
+    }
     if (e.target.id === 'budget-form') {
       e.preventDefault();
       const snap = snapshot();
@@ -911,6 +976,8 @@ function bind() {
   });
 
   const f = $('#edit-form');
+  f.merchant.addEventListener('input', updateOwnOffer);
+  f.card.addEventListener('input', updateOwnOffer);
   f.categoryId.addEventListener('change', () => {
     if (f.categoryId.value) setEditKind(categoryKind(state.categories, f.categoryId.value));
     updateRuleOffer();
@@ -967,6 +1034,13 @@ async function start() {
   let tab = 'overview';
   try { tab = sessionStorage.getItem('taler:tab') || tab; } catch { /* egal */ }
   selectTab(tab);
+  // Einmalig: Umbuchungen im Bestand nachträglich erkennen (eigene Konten, Gegenstücke bis 7 Tage, auch Apple Pay).
+  if ((await db.getMeta('transferScan')) !== 1) {
+    const snap = snapshot();
+    const n = await applyTransfers({ pairs: true });
+    await db.setMeta('transferScan', 1);
+    if (n) { render(); undoable(`${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen zwischen deinen Konten`, snap); }
+  }
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;
