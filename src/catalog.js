@@ -1,6 +1,19 @@
 // Feste Inhalte: Startregeln für häufige Händler in Deutschland.
 // Vom Assistenten zusammengestellt, ohne Gewähr. Wird nur beim ersten Start übernommen und ist danach frei änderbar.
 
+/**
+ * Mitgelieferte Kategorien. IDs nie ändern; Namen und Sichtbarkeit kann Anna ändern, eigene kommen dazu.
+ * @type {import('./model.js').Category[]}
+ */
+export const DEFAULT_CATEGORIES = [
+  ['lebensmittel', 'Lebensmittel', 'expense'], ['essen', 'Essen & Café', 'expense'], ['mobilitaet', 'Mobilität', 'expense'],
+  ['shopping', 'Shopping', 'expense'], ['drogerie', 'Drogerie', 'expense'], ['haushalt', 'Haushalt & Wohnen', 'expense'],
+  ['gesundheit', 'Gesundheit', 'expense'], ['freizeit', 'Freizeit', 'expense'], ['abos', 'Abos & Digitales', 'expense'],
+  ['reisen', 'Reisen', 'expense'], ['sonstiges', 'Sonstiges', 'expense'],
+  ['gehalt', 'Gehalt', 'income'], ['erstattung', 'Erstattung', 'income'], ['sonstige-einnahmen', 'Sonstige Einnahmen', 'income'],
+  ['sparen', 'Sparen', 'saving'],
+].map(([id, name, kind]) => ({ id, name, kind, hidden: false }));
+
 /** @type {{id: string, pattern: string, categoryId: string}[]} */
 export const DEFAULT_RULES = [
   ['rewe', 'lebensmittel'], ['edeka', 'lebensmittel'], ['lidl', 'lebensmittel'], ['aldi', 'lebensmittel'],

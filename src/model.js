@@ -15,9 +15,22 @@ export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
 
 /**
  * Art einer Buchung. expense = Ausgabe (oder Erstattung, dann negativ), income = Einnahme (Betrag negativ),
- * saving = Sparplan (zählt nicht als Ausgabe), transfer = Umbuchung zwischen eigenen Konten (zählt nirgends).
+ * saving = Sparplan (zählt nicht als Ausgabe), transfer = Umbuchung zwischen eigenen Konten (zählt nirgends),
+ * balance = Kategorie „gleicht sich aus“ (z. B. Dienstwagen: Sprit raus, Abrechnung rein; zählt weder als Ausgabe noch als Einnahme).
+ * Hat eine Buchung eine Kategorie, bestimmt deren Art die der Buchung (siehe `kindForCategory` in logic.js).
  */
-export const KINDS = ['expense', 'income', 'saving', 'transfer'];
+export const KINDS = ['expense', 'income', 'saving', 'transfer', 'balance'];
+
+/** Art einer Kategorie: expense, income, balance (gleicht sich aus) oder saving. */
+export const CATEGORY_KINDS = ['expense', 'income', 'balance', 'saving'];
+
+/**
+ * @typedef {Object} Category
+ * @property {string} id       stabil; die mitgelieferten behalten ihre ID, eigene heißen c-…
+ * @property {string} name
+ * @property {'expense'|'income'|'balance'|'saving'} kind
+ * @property {boolean} hidden  erscheint nicht mehr als Knopf beim Einordnen
+ */
 
 /**
  * @typedef {Object} Transaction
@@ -25,7 +38,7 @@ export const KINDS = ['expense', 'income', 'saving', 'transfer'];
  * @property {string} date          YYYY-MM-DD (lokales Datum der Zahlung)
  * @property {string|null} time     HH:MM oder null
  * @property {number} amountCents   ganze Cent, positiv = Geld ging raus, negativ = Geld kam rein (Erstattung, Einnahme)
- * @property {'expense'|'income'|'saving'|'transfer'} kind
+ * @property {'expense'|'income'|'saving'|'transfer'|'balance'} kind
  * @property {string} currency      ISO 4217, z. B. EUR
  * @property {number|null} baseCents  bei Fremdwährung: abgerechneter Betrag in der Hauptwährung (sonst null)
  * @property {string} merchant
@@ -46,12 +59,15 @@ export const KINDS = ['expense', 'income', 'saving', 'transfer'];
 
 /**
  * @typedef {Object} Settings
- * @property {number|null} monthlyBudgetCents
+ * @property {number|null} monthlyBudgetCents  fester Betrag (nur bei budgetMode „fixed“)
+ * @property {'auto'|'fixed'|'off'} budgetMode  auto = Einnahmen minus Sparpläne aus den Kontoauszügen
  * @property {string|null} budgetSince  YYYY-MM, ab dem das Budget gilt (für den Rückblick)
  * @property {string} currency
+ * @property {string[]} ownAccounts  eigene Konten (Name, IBAN, eigener Name): Buchungen dorthin sind Umbuchungen
  */
 
-export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, budgetSince: null, currency: 'EUR' });
+export const DEFAULT_OWN_ACCOUNTS = Object.freeze(['Trade Republic', 'ING']);
+export const DEFAULT_SETTINGS = Object.freeze({ monthlyBudgetCents: null, budgetMode: 'auto', budgetSince: null, currency: 'EUR', ownAccounts: DEFAULT_OWN_ACCOUNTS });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -74,7 +90,7 @@ export function sanitizeTransaction(raw) {
   if (!id || !DATE_RE.test(date)) return null;
   if (typeof raw.amountCents !== 'number' || !Number.isFinite(raw.amountCents)) return null;
   const time = typeof raw.time === 'string' && TIME_RE.test(raw.time) ? raw.time : null;
-  const categoryId = CATEGORY_IDS.includes(raw.categoryId) ? raw.categoryId : null;
+  const categoryId = str(raw.categoryId, 80) || null;
   const currency = /^[A-Z]{3}$/.test(raw.currency) ? raw.currency : 'EUR';
   return {
     id, date, time,
@@ -97,8 +113,24 @@ export function sanitizeRule(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const id = str(raw.id, 80);
   const pattern = str(raw.pattern, 80).toLowerCase();
-  if (!id || !pattern || !CATEGORY_IDS.includes(raw.categoryId)) return null;
-  return { id, pattern, categoryId: raw.categoryId };
+  const categoryId = str(raw.categoryId, 80);
+  if (!id || !pattern || !categoryId) return null;
+  return { id, pattern, categoryId };
+}
+
+/** @returns {Category|null} */
+export function sanitizeCategory(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = str(raw.id, 80);
+  const name = str(raw.name, 40);
+  if (!id || !name) return null;
+  return { id, name, kind: CATEGORY_KINDS.includes(raw.kind) ? raw.kind : 'expense', hidden: raw.hidden === true };
+}
+
+/** Liste aus dem Speicher oder einer Sicherung; doppelte IDs fallen weg. */
+export function sanitizeCategories(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map(sanitizeCategory).filter((c) => c && !seen.has(c.id) && seen.add(c.id));
 }
 
 /** @returns {Settings} */
@@ -106,15 +138,19 @@ export function sanitizeSettings(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const b = s.monthlyBudgetCents;
   const budget = typeof b === 'number' && Number.isFinite(b) && b > 0 ? Math.round(b) : null;
+  const mode = ['auto', 'fixed', 'off'].includes(s.budgetMode) ? s.budgetMode : budget ? 'fixed' : 'auto';
   return {
     monthlyBudgetCents: budget,
+    budgetMode: mode === 'fixed' && !budget ? 'auto' : mode,
     budgetSince: budget && /^\d{4}-\d{2}$/.test(s.budgetSince) ? s.budgetSince : null,
     currency: /^[A-Z]{3}$/.test(s.currency) ? s.currency : DEFAULT_SETTINGS.currency,
+    ownAccounts: Array.isArray(s.ownAccounts)
+      ? [...new Set(s.ownAccounts.map((a) => str(a, 60)).filter(Boolean))].slice(0, 30) : [...DEFAULT_OWN_ACCOUNTS],
   };
 }
 
 /**
- * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[]}} state
+ * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]}} state
  * @param {string} exportedAt ISO-Zeitstempel
  */
 export function buildExport(state, exportedAt) {
@@ -123,6 +159,7 @@ export function buildExport(state, exportedAt) {
     version: SCHEMA_VERSION,
     exportedAt,
     settings: state.settings,
+    categories: state.categories,
     transactions: state.transactions,
     rules: state.rules,
     deletedIds: state.deletedIds,
@@ -132,7 +169,7 @@ export function buildExport(state, exportedAt) {
 /**
  * Prüft eine Sicherungsdatei.
  * @param {string} text
- * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], skipped: number}
+ * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, skipped: number}
  *          | {ok: false, error: 'json'|'app'|'newer'|'shape'}}
  */
 export function parseImport(text) {
@@ -145,8 +182,10 @@ export function parseImport(text) {
   const transactions = data.transactions.map(sanitizeTransaction).filter(Boolean);
   const rules = (Array.isArray(data.rules) ? data.rules : []).map(sanitizeRule).filter(Boolean);
   const deletedIds = (Array.isArray(data.deletedIds) ? data.deletedIds : []).filter((x) => typeof x === 'string');
+  // Ältere Sicherungen haben keine Kategorienliste: dann bleiben die mitgelieferten.
+  const categories = Array.isArray(data.categories) ? sanitizeCategories(data.categories) : null;
   return {
-    ok: true, transactions, rules, deletedIds,
+    ok: true, transactions, rules, deletedIds, categories,
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

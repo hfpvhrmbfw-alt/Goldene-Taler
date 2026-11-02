@@ -1,11 +1,10 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
-import { CATEGORY_IDS } from './model.js';
 import {
-  monthSummary, groupByDay, monthsWithData, categoriesByUse, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf,
+  monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind,
 } from './logic.js';
 import { DEFAULT_RULES } from './catalog.js';
-import { CATEGORY_LABELS, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
+import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -40,7 +39,10 @@ const foreignText = (foreign) => foreign.map((f) => money(f.cents, f.currency)).
 /** Betrag für Eingabefelder: 1234 → "12,34" */
 export const amountInput = (cents) => (cents / 100).toFixed(2).replace('.', ',');
 
-export const catLabel = (id) => (id ? CATEGORY_LABELS[id] || id : UNCATEGORIZED);
+// Kategorien: die Oberfläche merkt sich die aktuelle Liste (main.js setzt sie bei jeder Änderung), damit Namen überall gleich sind.
+let CATS = [];
+export const setCategories = (list) => { CATS = list; };
+export const catLabel = (id) => (id ? CATS.find((c) => c.id === id)?.name || id : UNCATEGORIZED);
 export const monthLabel = (m) => `${MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
 const monthName = (m) => MONTHS[Number(m.slice(5, 7)) - 1];
 
@@ -63,9 +65,15 @@ const pct = (x) => `${Math.round(x * 100)} %`;
 const change = (now, before) => (before > 0 ? `${now >= before ? '+' : '−'}${Math.round(Math.abs(now - before) / before * 100)} %` : null);
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-export function categoryOptions(selected, { withNone = true } = {}) {
+/** Auswahlliste der Kategorien, nach Art gruppiert. Ausgeblendete nur, wenn sie gerade gewählt sind. */
+export function categoryOptions(selected, { withNone = true, kinds = null } = {}) {
   let html = withNone ? `<option value=""${selected === null ? ' selected' : ''}>${esc(UNCATEGORIZED)}</option>` : '';
-  for (const id of CATEGORY_IDS) html += `<option value="${id}"${selected === id ? ' selected' : ''}>${esc(CATEGORY_LABELS[id])}</option>`;
+  for (const [kind, title] of Object.entries(CATEGORY_GROUPS)) {
+    if (kinds && !kinds.includes(kind)) continue;
+    const list = CATS.filter((c) => c.kind === kind && (!c.hidden || c.id === selected));
+    if (!list.length) continue;
+    html += `<optgroup label="${esc(title)}">${list.map((c) => `<option value="${esc(c.id)}"${selected === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`;
+  }
   return html;
 }
 
@@ -105,6 +113,12 @@ export function backupDue(state, info, today) {
 }
 const backupLabel = (info, today) => (info.lastBackup ? `letzte ${sinceLabel(String(info.lastBackup).slice(0, 10), today)}` : 'noch nie gesichert');
 
+/** Inhalt der Budget-Kachel: übrig, Anteil und woher das Budget kommt (automatisch: Monat der Rechnung). */
+function budgetKpi(s, budget, cur) {
+  const how = budget.auto ? ` · automatisch${s.month !== budget.month ? ` aus ${monthName(budget.month).toLowerCase()}` : ''}` : '';
+  return `<div class="cap">budget übrig${how}</div><div class="v">${money(s.budgetLeftCents, cur)}</div><div class="sub">${pct(s.budgetShare)} von ${money(budget.cents, cur)}</div>`;
+}
+
 /** Bilanz des Monats: was nach Einnahmen, Ausgaben und Sparen übrig ist, dazu ein Balken und die Einzelsummen. */
 function balanceBlock(s, compare, cur) {
   const left = s.balanceCents;
@@ -130,7 +144,8 @@ function balanceBlock(s, compare, cur) {
 export function renderOverview(el, state, view, clock, info) {
   const cur = state.settings.currency;
   const months = monthsWithData(state.transactions, clock.month);
-  const s = monthSummary(state.transactions, view.month, clock.today, state.settings.monthlyBudgetCents, cur);
+  const budget = budgetFor(state.transactions, state.settings, view.month, cur);
+  const s = monthSummary(state.transactions, view.month, clock.today, budget ? budget.cents : null, cur);
   const idx = months.indexOf(view.month);
   const uncategorized = s.byCategory.find((c) => c.categoryId === null);
   const open = state.transactions.filter(needsCategory).length;
@@ -166,14 +181,14 @@ export function renderOverview(el, state, view, clock, info) {
   if (s.incomeCents > 0) {
     html += balanceBlock(s, compare, cur);
     if (s.budgetLeftCents !== null) {
-      html += `<div class="kpis"><div class="kpi"><div class="cap">budget übrig</div><div class="v">${money(s.budgetLeftCents, cur)}</div><div class="sub">${pct(s.budgetShare)} von ${money(state.settings.monthlyBudgetCents, cur)}</div></div></div>`;
+      html += `<div class="kpis"><div class="kpi">${budgetKpi(s, budget, cur)}</div></div>`;
     }
   } else {
     html += `
   <div class="kpis">
     <div class="kpi hero"><div class="cap">erfasste ausgaben</div><div class="v">${moneyHero(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
     ${s.budgetLeftCents !== null
-      ? `<div class="kpi"><div class="cap">budget übrig</div><div class="v">${money(s.budgetLeftCents, cur)}</div><div class="sub">${pct(s.budgetShare)} von ${money(state.settings.monthlyBudgetCents, cur)}</div></div>`
+      ? `<div class="kpi">${budgetKpi(s, budget, cur)}</div>`
       : `<div class="kpi"><div class="cap">pro tag</div><div class="v">${money(s.dailyAverageCents, cur)}</div><div class="sub">Durchschnitt</div></div>`}
   </div>`;
   }
@@ -220,6 +235,16 @@ export function renderOverview(el, state, view, clock, info) {
       extra: `<span class="share" aria-hidden="true"><i style="width:${(uncategorized.share * 100).toFixed(1)}%"></i></span>`,
     });
   }
+  if (s.settling.length) {
+    html += `<li class="cap settlehead">gleicht sich aus · zählt nicht mit</li>`;
+    for (const e of s.settling) {
+      html += item({
+        tag: 'button', attrs: `data-act="filter-cat" data-cat="${esc(e.categoryId ?? '')}"`, title: esc(catLabel(e.categoryId)),
+        sub: `${money(e.outCents, cur)} raus · ${money(e.inCents, cur)} rein`,
+        n: e.openCents ? `${money(Math.abs(e.openCents), cur)} ${e.openCents > 0 ? 'offen' : 'zu viel'}` : '±0,00 €', nCls: e.openCents ? 'open' : '',
+      });
+    }
+  }
   html += `</ul></details>`;
   if (view.month === clock.month) html += reviewCard(state, clock, info);
 
@@ -241,7 +266,7 @@ function curveBlock(state, view, clock, s) {
   const cur = state.settings.currency;
   const c = monthCurve(state.transactions, view.month, clock.today, cur);
   if (!c.current.some((v) => v !== 0)) return '';
-  const budget = state.settings.monthlyBudgetCents || null;
+  const budget = budgetFor(state.transactions, state.settings, view.month, cur)?.cents || null;
   const prev = c.previous;
   const max = Math.max(1, ...c.current, ...(prev || []), budget || 0) * 1.08;
   const W = 300;
@@ -322,7 +347,9 @@ function reviewCard(state, clock, info) {
   const r = monthReview(state.transactions, prev, cur);
   if (!r) return '';
   // Budget nur, wenn es im Vormonat schon galt.
-  const b = state.settings.budgetSince && state.settings.budgetSince <= prev ? state.settings.monthlyBudgetCents : null;
+  const bf = budgetFor(state.transactions, state.settings, prev, cur);
+  // Ein fester Betrag gilt nur für Monate, in denen er schon eingetragen war.
+  const b = bf && (bf.auto || (state.settings.budgetSince && state.settings.budgetSince <= prev)) ? bf.cents : null;
   const ch = r.previousComplete ? change(r.spentCents, r.previousCents) : null;
   const lines = [];
   if (ch) lines.push(`${ch} zum ${monthName(previousMonth(prev))}`);
@@ -414,9 +441,9 @@ export function renderList(el, state, view, clock) {
       const kind = kindOf(t);
       const dim = t.excluded || kind === 'transfer';
       const sub = [
-        t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : kind !== 'expense' ? KIND_LABELS[kind] : '',
+        t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : '',
         g.date ? '' : dayLabel(t.date, clock.today, clock.yesterday),
-        kind === 'expense' ? catLabel(t.categoryId) : '', base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
+        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind], base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
       ].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
@@ -432,7 +459,7 @@ export function renderList(el, state, view, clock) {
 
 /** Blatt „filter“: Kategorien (mehrere), Herkunft, ausgenommene Buchungen. `count` = Treffer mit der jetzigen Auswahl. */
 export function renderFilter(el, state, view, count) {
-  const cats = [...CATEGORY_IDS, null];
+  const cats = [...CATS.filter((c) => !c.hidden || view.listCats.includes(c.id)).map((c) => c.id), null];
   const pill = (act, attrs, on, label) => `<button class="pill${on ? ' on' : ''}" data-filter="${act}" ${attrs} aria-pressed="${on}">${esc(label)}</button>`;
   el.innerHTML = `
   <div class="sheethead"><h2 id="filter-title">filter</h2><button class="textbtn" data-filter="reset">zurücksetzen</button></div>
@@ -455,10 +482,50 @@ function merchantKpis(state, merchant, clock) {
   </div>`;
 }
 
+/** Kasten „automatisch“: was Taler rechnet und woraus. */
+function autoBudgetBox(state, clock, cur) {
+  const bf = budgetFor(state.transactions, state.settings, clock.month, cur);
+  if (!bf) return `<div class="note info"><span class="cap">automatisch</span>Noch keine Einnahmen. Sobald ein Kontoauszug mit Gehalt eingelesen ist, rechnet Taler das Budget selbst aus.</div>`;
+  const label = monthName(bf.month).toLowerCase();
+  return `<div class="suggest"><span class="cap">${esc(label)}</span><b>${money(bf.cents, cur)}</b>
+    <p class="muted small">Einnahmen minus Sparpläne, aus deinen Kontoauszügen. Rechnet sich neu, sobald im neuen Monat das Gehalt da ist${bf.month !== clock.month ? ` (bis dahin gilt ${esc(label)})` : ''}.</p>
+    <ul class="list">
+      ${item({ title: 'Einnahmen', sub: '', n: `+${money(bf.incomeCents, cur)}`, nCls: 'in' })}
+      ${item({ title: 'Sparpläne', sub: '', n: `−${money(bf.savingCents, cur)}` })}
+    </ul></div>
+  <p class="muted small">„Gleicht sich aus“ und Umbuchungen zählen nicht.</p>`;
+}
+
+/** Kategorien: nach Art gruppiert, eigene markiert, ausgeblendete eingeklappt. */
+export function renderCategories(el, state) {
+  const uses = new Map();
+  for (const t of state.transactions) if (t.categoryId) uses.set(t.categoryId, (uses.get(t.categoryId) || 0) + 1);
+  const rules = new Map();
+  for (const r of state.rules) rules.set(r.categoryId, (rules.get(r.categoryId) || 0) + 1);
+  const row = (c) => item({
+    tag: 'button', attrs: `data-act="edit-cat" data-id="${esc(c.id)}"`,
+    title: `${esc(c.name)}${c.id.startsWith('c-') ? '<span class="tagmini">eigene</span>' : ''}`,
+    sub: [uses.get(c.id) ? plural(uses.get(c.id), 'Buchung', 'Buchungen') : 'noch leer', rules.get(c.id) ? plural(rules.get(c.id), 'Regel', 'Regeln') : ''].filter(Boolean).join(' · '),
+    chev: true,
+  });
+  const shown = state.categories.filter((c) => !c.hidden);
+  const hidden = state.categories.filter((c) => c.hidden);
+  let html = `<h2 class="bigtitle">kategorien</h2>
+  <p class="meta-line">Antippen zum Umbenennen, Ausblenden oder Zusammenlegen. Die Art bestimmt, wo eine Buchung zählt.</p>
+  <ul class="list">${item({ tag: 'button', attrs: 'data-act="new-cat"', title: '<span class="addtext">+ neue kategorie</span>' })}</ul>`;
+  for (const [kind, title] of Object.entries(CATEGORY_GROUPS)) {
+    const list = shown.filter((c) => c.kind === kind);
+    if (list.length) html += `${head(`${title.toLowerCase()} · ${list.length}`)}<ul class="list">${list.map(row).join('')}</ul>`;
+  }
+  if (hidden.length) html += `<details><summary>ausgeblendet · ${hidden.length}</summary><div><ul class="list">${hidden.map(row).join('')}</ul></div></details>`;
+  el.innerHTML = html;
+}
+
 /** Einstellungen: Budget, Regeln, Kurzbefehl, Sicherung, Zurücksetzen. */
 export function renderSettings(el, state, view, info, clock) {
   const cur = state.settings.currency;
   const b = state.settings.monthlyBudgetCents;
+  const mode = view.budgetShow || state.settings.budgetMode;
   const custom = state.rules.filter((r) => !r.id.startsWith('std-')).length;
   const std = state.rules.length - custom;
   const demoCount = state.transactions.filter((t) => t.source === 'demo').length;
@@ -472,16 +539,31 @@ export function renderSettings(el, state, view, info, clock) {
     ${statementRow()}
   </ul>
 
-  ${head(`monatsbudget (${esc(cur)})`)}
-  <form class="inlineform" id="budget-form">
-    <label class="field"><span class="visually-hidden">Monatsbudget in ${esc(cur)}, leer für kein Budget</span><input name="budget" inputmode="decimal" placeholder="leer = kein Budget" value="${b ? amountInput(b) : ''}"></label>
+  ${head('monatsbudget')}
+  <div class="seg full" role="group" aria-label="Monatsbudget">
+    ${[['auto', 'automatisch'], ['fixed', 'fester betrag'], ['off', 'aus']].map(([k, l]) => `<button data-act="budget-mode" data-mode="${k}" aria-pressed="${mode === k}">${l}</button>`).join('')}
+  </div>
+  ${mode === 'auto' ? autoBudgetBox(state, clock, cur) : ''}
+  ${mode === 'fixed' ? `<form class="inlineform" id="budget-form">
+    <label class="field"><span class="visually-hidden">Monatsbudget in ${esc(cur)}, leer für kein Budget</span><input name="budget" inputmode="decimal" placeholder="z. B. 1500" value="${b ? amountInput(b) : ''}"></label>
     <button class="btn">übernehmen</button>
-  </form>
+  </form>` : ''}
 
   ${head('einordnen')}
   <ul class="list">
+    ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="categories"', title: 'Kategorien', sub: `${plural(state.categories.filter((c) => !c.hidden).length, 'Kategorie', 'Kategorien')}${state.categories.some((c) => c.id.startsWith('c-')) ? ` · ${state.categories.filter((c) => c.id.startsWith('c-')).length} eigene` : ''}`, chev: true })}
     ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="rules"', title: 'Regeln', sub: `${custom} eigene · ${std} vorgegeben`, chev: true })}
   </ul>
+
+  ${head('eigene konten')}
+  <p class="muted small">Geld zwischen diesen Konten ist eine Umbuchung und zählt weder als Einnahme noch als Ausgabe. Dein Name oder deine IBAN passen auch.</p>
+  <ul class="list">
+    ${state.settings.ownAccounts.map((a) => item({ tag: 'button', attrs: `data-act="remove-account" data-name="${esc(a)}"`, title: esc(a), n: 'entfernen', nCls: 'muted' })).join('')}
+  </ul>
+  <form class="inlineform" id="account-form">
+    <label class="field"><span class="visually-hidden">Konto, Name oder IBAN</span><input name="account" placeholder="z. B. Tagesgeld oder IBAN" autocomplete="off" maxlength="60"></label>
+    <button class="btn">hinzufügen</button>
+  </form>
 
   ${head('hilfe')}
   <details id="setup-details"><summary>kurzbefehl einrichten</summary><div>
@@ -549,16 +631,17 @@ export function renderSorter(el, state, s, clock) {
     return;
   }
   const t = s.t;
-  const cats = s.cats || categoriesByUse(state.transactions);
+  const cats = s.cats;
   el.innerHTML = `
   <div class="sheethead"><h2 id="sort-title" class="cap">einordnen · ${s.pos} von ${s.total}</h2><button class="iconbtn" data-sort="close" aria-label="Schließen">${ICON.close}</button></div>
   <div class="sortcard">
     <div class="sortmerchant">${esc(t.merchant || 'Ohne Händler')}</div>
     <div class="sortamount">${t.amountCents < 0 ? '+' : ''}${money(Math.abs(t.amountCents), t.currency)}</div>
-    <div class="muted small">${esc([dayLabel(t.date, clock.today, clock.yesterday), t.date.slice(0, 7) !== clock.month ? t.date.slice(0, 4) : '', t.time, t.card].filter(Boolean).join(' · '))}</div>
+    <div class="muted small">${esc([kindOf(t) === 'income' ? 'Einnahme' : '', dayLabel(t.date, clock.today, clock.yesterday), t.date.slice(0, 7) !== clock.month ? t.date.slice(0, 4) : '', t.time, t.card].filter(Boolean).join(' · '))}</div>
   </div>
   <div class="catgrid" role="group" aria-label="Kategorie wählen">
-    ${cats.map((id) => `<button class="catbtn" data-sort-cat="${id}">${esc(CATEGORY_LABELS[id])}</button>`).join('')}
+    ${cats.map((id) => `<button class="catbtn" data-sort-cat="${esc(id)}">${esc(catLabel(id))}</button>`).join('')}
+    <button class="catbtn add" data-sort="new-cat">+ neue</button>
   </div>
   ${s.pattern ? `<label class="ruleopt"><input type="checkbox" id="sort-make-rule"${ruleDefault(state.transactions, s.pattern) ? ' checked' : ''}><span>Künftig alle bei <input id="sort-pattern" class="inline-input" value="${esc(s.pattern)}" aria-label="Muster"> so einordnen</span></label>` : ''}
   ${undo}

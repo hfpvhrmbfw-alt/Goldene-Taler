@@ -1,16 +1,17 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
+  categoryKind, mergeCategory, isOwnAccountMove, transfersIn,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { pdfPages } from './pdf.js';
-import { DEFAULT_RULES } from './catalog.js';
-import { IMPORT_ERRORS, CATEGORY_LABELS, STATEMENT_ERRORS } from './texts.js';
+import { DEFAULT_RULES, DEFAULT_CATEGORIES } from './catalog.js';
+import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
 import * as ui from './ui.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -25,11 +26,11 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [] };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
-  importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true },
+  importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true }, budgetShow: null, editKind: 'expense', catEditing: null,
 };
 // Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
 for (const k of Object.keys(view.folds)) {
@@ -38,21 +39,27 @@ for (const k of Object.keys(view.folds)) {
 const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false };
 
 // ---------- Speichern ----------
+/** Kategorienliste setzen: Zustand und Oberfläche kennen dieselbe Liste. */
+function setCategories(list) { state.categories = list; ui.setCategories(list); }
+async function saveCategories() { await db.setMeta('categories', state.categories); }
+/** Mitgelieferte Kategorien, die in einer gespeicherten Liste fehlen (z. B. neu dazugekommene), hinten ergänzen. */
+const withDefaults = (list) => [...list, ...DEFAULT_CATEGORIES.filter((d) => !list.some((c) => c.id === d.id))];
+
 async function saveTransactions(list) { await db.putTransactions(list); }
 async function saveRules() { await db.putRules(state.rules); }
 
 /** Regeln neu anwenden und geänderte Buchungen speichern. */
 async function reapplyRules() {
-  const before = new Map(state.transactions.map((t) => [t.id, t.categoryId]));
-  state.transactions = applyRules(state.transactions, state.rules);
-  const changed = state.transactions.filter((t) => before.get(t.id) !== t.categoryId);
+  const before = new Set(state.transactions);
+  state.transactions = applyRules(state.transactions, state.rules, state.categories);
+  const changed = state.transactions.filter((t) => !before.has(t));
   if (changed.length) await saveTransactions(changed);
   return changed.length;
 }
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -64,8 +71,10 @@ async function restore(snap) {
   const curR = new Map(state.rules.map((r) => [r.id, r]));
   await db.putRules(snap.rules.filter((r) => curR.get(r.id) !== r));
   Object.assign(state, snap);
+  ui.setCategories(state.categories);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('settings', state.settings);
+  await saveCategories();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -77,7 +86,7 @@ function undoable(msg, snap) {
 }
 
 // ---------- Rendering ----------
-const TABS = { overview: 'Übersicht', list: 'Buchungen', settings: 'Einstellungen', rules: 'Regeln' };
+const TABS = { overview: 'Übersicht', list: 'Buchungen', settings: 'Einstellungen', rules: 'Regeln', categories: 'Kategorien' };
 const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
 function render() {
@@ -87,9 +96,10 @@ function render() {
   if (view.tab === 'list') ui.renderList(el, state, view, c);
   if (view.tab === 'settings') ui.renderSettings(el, state, view, info, c);
   if (view.tab === 'rules') ui.renderRules(el, state);
+  if (view.tab === 'categories') ui.renderCategories(el, state);
   document.title = `Taler · ${TABS[view.tab]}`;
   $('#add-btn').hidden = !(view.tab === 'overview' || view.tab === 'list');
-  const back = view.tab === 'rules' ? ['settings', 'einstellungen'] : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht'] : null;
+  const back = view.tab === 'rules' || view.tab === 'categories' ? ['settings', 'einstellungen'] : view.tab === 'list' && view.from === 'overview' ? ['overview', 'übersicht'] : null;
   $('#head-left').innerHTML = back
     ? `<button class="backbtn" type="button" data-act="back" data-tab="${back[0]}">${BACK}<span>${back[1]}</span></button>` : '';
   // Sicherung fällig: Punkt am Reiter Einstellungen statt einer Zeile in der Übersicht.
@@ -136,7 +146,7 @@ function selectTab(tab, { keepFrom = false } = {}) {
   if (tab !== 'overview') view.importReport = '';
   view.tab = tab;
   if (!keepFrom) view.from = null;
-  const navTab = tab === 'rules' ? 'settings' : tab;
+  const navTab = tab === 'rules' || tab === 'categories' ? 'settings' : tab;
   for (const a of document.querySelectorAll('.tabbar a')) {
     if (a.dataset.tab === navTab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
@@ -223,6 +233,35 @@ function withoutCrossDuplicates(incoming) {
   return { incoming: incoming.filter((t) => !dupes.has(t.id)), dupes: dupes.size };
 }
 
+const toTransfer = (t) => ({ ...t, kind: 'transfer', categoryId: null, manualCategory: false });
+
+/**
+ * Umbuchungen zwischen eigenen Konten in neuen Zeilen finden: Gegenstück auf einem anderen Konto oder ein eigenes Konto als Gegenseite.
+ * Bekannte Gegenstücke werden mit umgestellt (`changed`).
+ */
+function markTransfers(rows) {
+  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
+  const fresh = rows.filter((t) => !known.has(t.id));
+  const marks = findTransfers(state.transactions, fresh);
+  for (const t of fresh) if (isOwnAccountMove(t, state.settings.ownAccounts)) marks.add(t.id);
+  return {
+    incoming: rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t)),
+    changed: state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer),
+  };
+}
+
+/** Vorhandene Buchungen, die ein eigenes Konto nennen (oder ein Gegenstück haben), zu Umbuchungen machen. */
+async function applyTransfers({ pairs = false } = {}) {
+  const hits = pairs ? transfersIn(state.transactions, state.settings.ownAccounts)
+    : new Set(state.transactions.filter((t) => isOwnAccountMove(t, state.settings.ownAccounts)).map((t) => t.id));
+  const changed = state.transactions.filter((t) => hits.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer);
+  if (!changed.length) return 0;
+  const byId = new Map(changed.map((t) => [t.id, t]));
+  state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
+  await saveTransactions(changed);
+  return changed.length;
+}
+
 async function importLog(text, { demo = false } = {}) {
   const snap = snapshot();
   const parsed = parseLog(text, state.settings.currency);
@@ -230,9 +269,13 @@ async function importLog(text, { demo = false } = {}) {
   let dupes = 0;
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
   else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
-  const categorized = applyRules(incoming, state.rules);
-  const { transactions: merged, added } = mergeTransactions(state.transactions, categorized, state.deletedIds);
+  let changed = [];
+  if (!demo) ({ incoming, changed } = markTransfers(incoming));
+  const byId = new Map(changed.map((t) => [t.id, t]));
+  const categorized = applyRules(incoming, state.rules, state.categories);
+  const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), categorized, state.deletedIds);
   state.transactions = merged;
+  if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
   if (demo) {
     view.importReport = '';
@@ -264,12 +307,9 @@ async function importStatement(file) {
   const snap = snapshot();
   const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
   // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
-  const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
-  const marks = findTransfers(state.transactions, rows.filter((t) => !known.has(t.id)));
-  const incoming = rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t));
-  const changed = state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map((t) => ({ ...t, kind: 'transfer', categoryId: null, manualCategory: false }));
+  const { incoming, changed } = markTransfers(rows);
   const byId = new Map(changed.map((t) => [t.id, t]));
-  const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), applyRules(incoming, state.rules), state.deletedIds);
+  const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), applyRules(incoming, state.rules, state.categories), state.deletedIds);
   state.transactions = merged;
   if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
@@ -301,15 +341,19 @@ async function restoreBackup(text) {
   state.rules = orderRules(r.rules.length ? r.rules : DEFAULT_RULES);
   state.settings = r.settings;
   state.deletedIds = r.deletedIds;
+  setCategories(withDefaults(r.categories || []));
+  view.budgetShow = null;
   await saveTransactions(state.transactions);
   await saveRules();
+  await saveCategories();
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
   if (info.lastImport) await db.setMeta('lastImport', info.lastImport);
   if (info.lastBackup) await db.setMeta('lastBackup', info.lastBackup);
+  const n = await applyTransfers({ pairs: true });
   render();
-  toast(r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen');
+  toast(`${r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen'}${n ? `, ${n} Umbuchungen erkannt` : ''}`);
 }
 
 function demoLog() {
@@ -343,14 +387,15 @@ function renderFilter() {
 }
 
 // ---------- Bearbeiten ----------
-/** Art im Bearbeiten-Blatt wählen. Kategorie gibt es nur bei Ausgaben. */
+/** Art im Bearbeiten-Blatt wählen. Eine Kategorie gibt es überall außer bei Umbuchungen; „gleicht sich aus“ hat keinen eigenen Knopf. */
 function setEditKind(kind) {
   view.editKind = kind;
   for (const b of document.querySelectorAll('#kind-seg button')) b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
   const f = $('#edit-form');
-  f.categoryId.closest('label').hidden = kind !== 'expense';
-  if (kind !== 'expense') $('#rule-offer').hidden = true;
-  $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : 'betrag';
+  f.categoryId.closest('label').hidden = kind === 'transfer';
+  if (kind === 'transfer') $('#rule-offer').hidden = true;
+  updateOwnOffer();
+  $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : kind === 'balance' ? 'betrag (− = eingegangen)' : 'betrag';
 }
 
 function openEditor(id) {
@@ -379,6 +424,7 @@ function openEditor(id) {
   ml.dataset.merchant = t.merchant;
   ml.textContent = `alle zahlungen bei ${t.merchant} ›`;
   f.rulePattern.value = suggestPattern(t.merchant);
+  f.ownPattern.value = t.merchant.trim().split(/\s+/).slice(0, 2).join(' ');
   f.makeRule.checked = ruleDefault(state.transactions, f.rulePattern.value);
   $('#rule-offer').hidden = true;
   $('#edit-error').hidden = true;
@@ -386,6 +432,14 @@ function openEditor(id) {
   $('#edit-title').textContent = id ? 'buchung ändern' : 'neue buchung';
   openSheet($('#edit-dialog'));
   if (!id) f.merchant.focus();
+}
+
+/** Bei „umbuchung“: Gegenseite als eigenes Konto merken, damit es künftig von selbst passt. */
+function updateOwnOffer() {
+  const f = $('#edit-form');
+  if (!view.editing) return;
+  const probe = { merchant: f.merchant.value, card: f.card.value, kind: 'expense' };
+  $('#own-offer').hidden = !(view.editKind === 'transfer' && f.merchant.value.trim() && !isOwnAccountMove(probe, state.settings.ownAccounts));
 }
 
 function updateRuleOffer() {
@@ -407,7 +461,9 @@ async function saveEditor() {
     $('#edit-error').hidden = false;
     return false;
   }
-  const kind = view.editKind;
+  // Hat die Buchung eine Kategorie, bestimmt deren Art die der Buchung; sonst gilt der Umschalter.
+  const cat = view.editKind === 'transfer' ? null : f.categoryId.value || null;
+  const kind = cat ? categoryKind(state.categories, cat) : view.editKind;
   // Einnahmen stehen negativ (Geld kam rein), Sparen positiv; sonst gilt das Vorzeichen, wie eingetippt (negativ = Erstattung).
   const cents = kind === 'income' ? -Math.abs(amount.cents) : kind === 'saving' ? Math.abs(amount.cents) : amount.cents;
   const currency = amount.currency || t.currency || state.settings.currency;
@@ -422,22 +478,28 @@ async function saveEditor() {
     baseCents = b.cents;
   }
   const snap = snapshot();
-  const cat = kind === 'expense' ? f.categoryId.value || null : null;
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let categoryId = cat;
   let manualCategory = t.manualCategory || (cat !== t.categoryId);
-  if (!t.id && !cat && kind === 'expense') { categoryId = categorize(f.merchant.value, state.rules); manualCategory = false; }
-  if (kind !== 'expense') { categoryId = null; manualCategory = false; }
-  const next = sanitizeTransaction({
+  if (kind === 'transfer') { categoryId = null; manualCategory = false; }
+  let next = sanitizeTransaction({
     ...t, id, merchant: f.merchant.value, amountCents: cents, kind, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
   });
   if (!next) return false;
+  // Neue Buchung ohne Kategorie: die Regeln dürfen einordnen.
+  if (!t.id && !cat && (kind === 'expense' || kind === 'income')) next = applyRules([next], state.rules, state.categories)[0];
   state.transactions = sortTransactions([...state.transactions.filter((x) => x.id !== id), next]);
   await saveTransactions([next]);
 
-  if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
+  const own = f.ownPattern.value.trim();
+  if (kind === 'transfer' && !$('#own-offer').hidden && f.makeOwn.checked && own) {
+    state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, own] });
+    await db.setMeta('settings', state.settings);
+    const n = await applyTransfers();
+    undoable(`„${own}“ ist jetzt ein eigenes Konto${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
+  } else if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
     const { rules, rule } = upsertRule(state.rules, f.rulePattern.value, cat, `u-${Date.now().toString(36)}`);
     state.rules = rules;
     await db.putRules([rule]);
@@ -469,7 +531,7 @@ async function deleteEditing() {
 }
 
 // ---------- Einordnen ----------
-const sorter = { total: 0, skipped: new Set(), last: null, cats: [] };
+const sorter = { total: 0, skipped: new Set(), last: null };
 
 /** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol). */
 function sortQueue() {
@@ -482,7 +544,8 @@ function renderSorter() {
   const t = q[0] || null;
   ui.renderSorter($('#sort-body'), state, {
     t, pos: Math.min(sorter.total, Math.max(1, sorter.total - q.length + 1)), total: sorter.total,
-    pattern: t ? suggestPattern(t.merchant) : '', cats: sorter.cats, last: sorter.last,
+    pattern: t ? suggestPattern(t.merchant) : '', last: sorter.last,
+    cats: categoriesByUse(state.transactions, state.categories, t && kindOf(t) === 'income' ? ['income', 'balance'] : ['expense', 'balance', 'saving']),
   }, clock());
 }
 
@@ -490,7 +553,6 @@ function openSorter() {
   clearUndo();
   sorter.skipped = new Set();
   sorter.last = null;
-  sorter.cats = categoriesByUse(state.transactions);
   sorter.total = sortQueue().length;
   renderSorter();
   openSheet($('#sort-dialog'));
@@ -500,7 +562,7 @@ async function sortInto(categoryId) {
   const t = sortQueue()[0];
   if (!t) return;
   const snap = snapshot();
-  const next = { ...t, categoryId, manualCategory: true };
+  const next = { ...t, categoryId, manualCategory: true, kind: categoryKind(state.categories, categoryId) };
   state.transactions = state.transactions.map((x) => (x.id === t.id ? next : x));
   await saveTransactions([next]);
   let n = 0;
@@ -511,16 +573,118 @@ async function sortInto(categoryId) {
     await db.putRules([rule]);
     n = await reapplyRules();
   }
-  sorter.last = { snap, text: `${t.merchant} → ${CATEGORY_LABELS[categoryId]}${n ? ` (+${n})` : ''}` };
+  sorter.last = { snap, text: `${t.merchant} → ${ui.catLabel(categoryId)}${n ? ` (+${n})` : ''}` };
   renderSorter();
   render();
 }
 
 async function sorterAction(act) {
   if (act === 'close') { closeSheet($('#sort-dialog')); render(); return; }
+  if (act === 'new-cat') { const t = sortQueue()[0]; openCatEditor(null, { kind: t && kindOf(t) === 'income' ? 'income' : 'expense', forSort: true }); return; }
   if (act === 'skip') { const t = sortQueue()[0]; if (t) sorter.skipped.add(t.id); }
   if (act === 'undo' && sorter.last) { await restore(sorter.last.snap); sorter.last = null; render(); }
   renderSorter();
+}
+
+// ---------- Budget ----------
+/** Automatisch und aus gelten sofort; fester Betrag erst, wenn einer eingetragen ist. */
+async function setBudgetMode(mode) {
+  if (mode === 'fixed' && !state.settings.monthlyBudgetCents) { view.budgetShow = 'fixed'; render(); return; }
+  view.budgetShow = null;
+  if (state.settings.budgetMode === mode) { render(); return; }
+  state.settings = sanitizeSettings({ ...state.settings, budgetMode: mode });
+  await db.setMeta('settings', state.settings);
+  render();
+}
+
+// ---------- Kategorien ----------
+const KIND_HINTS = {
+  expense: 'Zählt bei den Ausgaben und im Budget.',
+  income: 'Zählt bei den Einnahmen.',
+  balance: 'Ein- und Auszahlungen gleichen sich aus (z. B. Dienstwagen: Tanken und Kostenabrechnung). Zählt weder bei Ausgaben noch Einnahmen, ein offener Rest steht in der Übersicht.',
+  saving: 'Geht vom Übrigen ab, zählt aber nicht als Ausgabe.',
+};
+
+function setCatKind(kind, locked) {
+  view.catKind = kind;
+  for (const b of document.querySelectorAll('#cat-kind [data-ckind]')) {
+    b.setAttribute('aria-pressed', String(b.dataset.ckind === kind));
+    b.disabled = locked && b.dataset.ckind !== kind;
+  }
+  $('#cat-kind-hint').textContent = KIND_HINTS[kind] + (locked ? ' Die Art lässt sich nur bei neuen Kategorien wählen.' : '');
+}
+
+/** Kategorie bearbeiten oder neu anlegen. `forSort`: aus dem Einordnen heraus, die Zahlung kommt danach gleich hinein. */
+function openCatEditor(id, { kind = 'expense', forSort = false } = {}) {
+  const c = id ? state.categories.find((x) => x.id === id) : null;
+  view.catEditing = { c, forSort };
+  const f = $('#cat-form');
+  f.name.value = c ? c.name : '';
+  f.hidden.checked = !!c?.hidden;
+  setCatKind(c ? c.kind : kind, !!c);
+  const others = c ? state.categories.filter((x) => x.id !== c.id && x.kind === c.kind) : [];
+  $('#cat-merge').hidden = !others.length;
+  f.mergeTo.innerHTML = others.map((x) => `<option value="${ui.esc(x.id)}">${ui.esc(x.name)}</option>`).join('');
+  const used = c && state.transactions.some((t) => t.categoryId === c.id);
+  $('#cat-delete').hidden = !(c && c.id.startsWith('c-') && !used);
+  $('#cat-title').textContent = c ? 'kategorie ändern' : 'neue kategorie';
+  $('#cat-error').hidden = true;
+  f.hidden.closest('label').hidden = forSort;
+  openSheet($('#cat-dialog'));
+  if (!c) f.name.focus();
+}
+
+function catError(text) { $('#cat-error').textContent = text; $('#cat-error').hidden = false; return false; }
+
+async function saveCatEditor() {
+  const f = $('#cat-form');
+  const { c, forSort } = view.catEditing;
+  const name = f.name.value.trim();
+  if (!name) return catError('Bitte einen Namen angeben.');
+  if (state.categories.some((x) => x !== c && x.name.toLowerCase() === name.toLowerCase())) return catError('Diesen Namen gibt es schon.');
+  const snap = snapshot();
+  const next = { id: c ? c.id : `c-${Date.now().toString(36)}`, name, kind: c ? c.kind : view.catKind, hidden: forSort ? false : f.hidden.checked };
+  setCategories(c ? state.categories.map((x) => (x.id === c.id ? next : x)) : [...state.categories, next]);
+  await saveCategories();
+  if (forSort) { closeSheet($('#cat-dialog'), 'save'); await sortInto(next.id); return true; }
+  render();
+  undoable(c ? 'Kategorie gespeichert' : `Kategorie „${name}“ angelegt`, snap);
+  return true;
+}
+
+async function mergeCatEditor() {
+  const { c } = view.catEditing;
+  const to = $('#cat-form').mergeTo.value;
+  const target = state.categories.find((x) => x.id === to);
+  if (!c || !target) return;
+  const n = state.transactions.filter((t) => t.categoryId === c.id).length;
+  if (!(await ask(`„${c.name}“ mit „${target.name}“ zusammenlegen? ${n} Buchungen und die Regeln wandern mit.${c.id.startsWith('c-') ? ` „${c.name}“ fällt danach weg.` : ` „${c.name}“ wird ausgeblendet.`}`, 'Zusammenlegen'))) return;
+  const snap = snapshot();
+  const moved = mergeCategory(state.transactions, state.rules, c.id, to);
+  const changedT = moved.transactions.filter((t, i) => t !== state.transactions[i]);
+  state.transactions = moved.transactions;
+  state.rules = orderRules(moved.rules);
+  await saveTransactions(changedT);
+  await saveRules();
+  setCategories(c.id.startsWith('c-') ? state.categories.filter((x) => x.id !== c.id) : state.categories.map((x) => (x.id === c.id ? { ...x, hidden: true } : x)));
+  await saveCategories();
+  closeSheet($('#cat-dialog'));
+  render();
+  undoable(`Zusammengelegt mit „${target.name}“`, snap);
+}
+
+async function deleteCatEditor() {
+  const { c } = view.catEditing;
+  if (!c || !c.id.startsWith('c-') || state.transactions.some((t) => t.categoryId === c.id)) return;
+  const snap = snapshot();
+  const gone = state.rules.filter((r) => r.categoryId === c.id);
+  for (const r of gone) await db.deleteRule(r.id);
+  state.rules = state.rules.filter((r) => r.categoryId !== c.id);
+  setCategories(state.categories.filter((x) => x.id !== c.id));
+  await saveCategories();
+  closeSheet($('#cat-dialog'));
+  render();
+  undoable(`Kategorie „${c.name}“ gelöscht`, snap);
 }
 
 // ---------- Regeln ----------
@@ -662,6 +826,16 @@ function bind() {
     if (act === 'sort') openSorter();
     if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
     if (act === 'edit-rule') openRuleEditor(b.dataset.id);
+    if (act === 'edit-cat') openCatEditor(b.dataset.id);
+    if (act === 'new-cat') openCatEditor(null);
+    if (act === 'budget-mode') await setBudgetMode(b.dataset.mode);
+    if (act === 'remove-account') {
+      const snap = snapshot();
+      state.settings = sanitizeSettings({ ...state.settings, ownAccounts: state.settings.ownAccounts.filter((a) => a !== b.dataset.name) });
+      await db.setMeta('settings', state.settings);
+      render();
+      undoable(`„${b.dataset.name}“ entfernt. Bisherige Umbuchungen bleiben.`, snap);
+    }
     if (act === 'new-rule') openRuleEditor(null);
     if (act === 'restore-std') await restoreDefaultRules();
     if (act === 'demo') await importLog(demoLog(), { demo: true });
@@ -671,7 +845,10 @@ function bind() {
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten.', 'Alles löschen', { danger: true })) {
       await db.clear();
       Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [] });
+      setCategories(DEFAULT_CATEGORIES);
+      view.budgetShow = null;
       await saveRules();
+      await saveCategories();
       await db.setMeta('initialized', true);
       info.lastImport = null;
       info.lastBackup = null;
@@ -711,7 +888,10 @@ function bind() {
   // Art der Buchung im Bearbeiten-Blatt
   $('#kind-seg').addEventListener('click', (e) => {
     const k = e.target.closest('[data-kind]')?.dataset.kind;
-    if (k) setEditKind(k);
+    if (!k) return;
+    setEditKind(k);
+    const f = $('#edit-form');
+    if (f.categoryId.value && categoryKind(state.categories, f.categoryId.value) !== k) f.categoryId.value = '';
   });
 
   document.addEventListener('change', async (e) => {
@@ -769,13 +949,26 @@ function bind() {
   });
 
   document.addEventListener('submit', async (e) => {
+    if (e.target.id === 'account-form') {
+      e.preventDefault();
+      const name = e.target.account.value.trim();
+      if (!name) return;
+      const snap = snapshot();
+      state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, name] });
+      await db.setMeta('settings', state.settings);
+      const n = await applyTransfers();
+      render();
+      undoable(`„${name}“ hinzugefügt${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
+    }
     if (e.target.id === 'budget-form') {
       e.preventDefault();
       const snap = snapshot();
       const v = e.target.budget.value.trim();
       const a = v ? parseAmount(v) : null;
+      if (v && !a) { toast('Bitte einen Betrag wie 1500 angeben'); return; }
       const since = state.settings.monthlyBudgetCents && state.settings.budgetSince ? state.settings.budgetSince : clock().month;
-      state.settings = sanitizeSettings({ ...state.settings, monthlyBudgetCents: a ? a.cents : null, budgetSince: since });
+      state.settings = sanitizeSettings({ ...state.settings, monthlyBudgetCents: a ? a.cents : null, budgetSince: since, budgetMode: a ? 'fixed' : 'off' });
+      view.budgetShow = null;
       await db.setMeta('settings', state.settings);
       render();
       undoable(state.settings.monthlyBudgetCents ? 'Budget gespeichert' : 'Budget entfernt', snap);
@@ -783,7 +976,12 @@ function bind() {
   });
 
   const f = $('#edit-form');
-  f.categoryId.addEventListener('change', updateRuleOffer);
+  f.merchant.addEventListener('input', updateOwnOffer);
+  f.card.addEventListener('input', updateOwnOffer);
+  f.categoryId.addEventListener('change', () => {
+    if (f.categoryId.value) setEditKind(categoryKind(state.categories, f.categoryId.value));
+    updateRuleOffer();
+  });
   f.addEventListener('submit', async (e) => {
     const action = e.submitter?.value;
     if (action === 'save') { e.preventDefault(); if (await saveEditor()) closeSheet($('#edit-dialog'), 'save'); }
@@ -794,6 +992,17 @@ function bind() {
     const action = e.submitter?.value;
     if (action === 'save') { e.preventDefault(); if (await saveRuleEditor()) closeSheet($('#rule-dialog'), 'save'); }
     if (action === 'delete') { e.preventDefault(); closeSheet($('#rule-dialog')); await deleteRule(view.editingRule.id); }
+  });
+  const cf = $('#cat-form');
+  cf.addEventListener('submit', async (e) => {
+    const action = e.submitter?.value;
+    if (action === 'save') { e.preventDefault(); if (await saveCatEditor()) closeSheet($('#cat-dialog'), 'save'); }
+    if (action === 'merge') { e.preventDefault(); await mergeCatEditor(); }
+    if (action === 'delete') { e.preventDefault(); await deleteCatEditor(); }
+  });
+  $('#cat-kind').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ckind]');
+    if (b && !b.disabled) setCatKind(b.dataset.ckind, false);
   });
   for (const d of document.querySelectorAll('dialog.sheet')) bindSheet(d);
   $('#add-btn').addEventListener('click', () => openEditor(null));
@@ -820,10 +1029,18 @@ async function start() {
     await db.setMeta('initialized', true);
   }
   state.rules = orderRules((await db.allRules()).map(sanitizeRule).filter(Boolean));
+  setCategories(withDefaults(sanitizeCategories(await db.getMeta('categories'))));
   bind();
   let tab = 'overview';
   try { tab = sessionStorage.getItem('taler:tab') || tab; } catch { /* egal */ }
   selectTab(tab);
+  // Einmalig: Umbuchungen im Bestand nachträglich erkennen (eigene Konten, Gegenstücke bis 7 Tage, auch Apple Pay).
+  if ((await db.getMeta('transferScan')) !== 1) {
+    const snap = snapshot();
+    const n = await applyTransfers({ pairs: true });
+    await db.setMeta('transferScan', 1);
+    if (n) { render(); undoable(`${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen zwischen deinen Konten`, snap); }
+  }
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;

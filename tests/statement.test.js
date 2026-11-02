@@ -117,11 +117,13 @@ test('findTransfers: gleicher Betrag raus und rein auf verschiedenen Konten ist 
   assert.deepEqual([...L.findTransfers([], [ing, tr])].sort(), ['a', 'b']);
 });
 
-test('findTransfers: nicht bei anderem Betrag, mehr als 3 Tagen, gleichem Konto oder anderer Quelle', () => {
+test('findTransfers: nicht bei anderem Betrag, mehr als 7 Tagen, gleichem Konto oder anderer Quelle', () => {
   const out = stmt('a', '2026-10-31', 100000, 'ING');
   assert.equal(L.findTransfers([out], [stmt('b', '2026-11-02', -100100, 'Trade Republic')]).size, 0);
-  assert.equal(L.findTransfers([out], [stmt('b', '2026-11-04', -100000, 'Trade Republic')]).size, 0);
+  assert.equal(L.findTransfers([out], [stmt('b', '2026-11-08', -100000, 'Trade Republic')]).size, 0);
   assert.equal(L.findTransfers([out], [stmt('b', '2026-11-01', -100000, 'ING')]).size, 0);
+  // ING-Visa ist dasselbe Girokonto wie ING.
+  assert.equal(L.findTransfers([out], [stmt('b', '2026-11-01', -100000, 'ING Visa')]).size, 0);
   assert.equal(L.findTransfers([out], [{ ...stmt('b', '2026-11-01', -100000, 'Trade Republic'), source: 'manual' }]).size, 0);
 });
 
@@ -130,4 +132,29 @@ test('findTransfers: jede Buchung hat höchstens einen Partner, das nächste Dat
   const near = stmt('n', '2026-11-02', -5000, 'Trade Republic');
   const far = stmt('f', '2026-11-04', -5000, 'Trade Republic');
   assert.deepEqual([...L.findTransfers([out], [far, near])].sort(), ['a', 'n']);
+});
+
+test('findTransfers: Lastschrift nach dem Wochenende (6 Tage) und Apple-Pay-Zeile werden gepaart', () => {
+  const tr = stmt('b', '2026-11-01', -20000, 'Trade Republic');
+  assert.deepEqual([...L.findTransfers([tr], [stmt('a', '2026-11-07', 20000, 'ING')])].sort(), ['a', 'b']);
+  const pay = { ...stmt('sc', '2026-11-02', 20000, 'Visa'), source: 'shortcut', merchant: 'Trade Republic' };
+  assert.deepEqual([...L.findTransfers([tr], [pay])].sort(), ['b', 'sc']);
+});
+
+test('isOwnAccountMove: eigenes Konto als Gegenseite, nicht das eigene Konto der Buchung', () => {
+  const acc = ['Trade Republic', 'ING', 'DE12 3456 7890 1234 5678 90'];
+  assert.equal(L.isOwnAccountMove({ ...stmt('a', '2026-11-01', 5000, 'ING'), merchant: 'Trade Republic Bank GmbH' }, acc), true);
+  assert.equal(L.isOwnAccountMove({ ...stmt('a', '2026-11-01', -5000, 'Trade Republic'), merchant: 'Einzahlung von DE12345678901234567890' }, acc), true);
+  assert.equal(L.isOwnAccountMove({ ...stmt('a', '2026-11-01', -5000, 'Trade Republic'), merchant: 'Trade Republic Zinsen' }, acc), false);
+  assert.equal(L.isOwnAccountMove({ ...stmt('a', '2026-11-01', 5000, 'Visa'), merchant: 'Booking.com' }, acc), false);
+  assert.equal(L.isOwnAccountMove({ ...stmt('a', '2026-11-01', 5000, 'ING', 'saving'), merchant: 'Trade Republic' }, acc), false);
+});
+
+test('transfersIn: Bestand nachträglich prüfen', () => {
+  const list = [
+    { ...stmt('a', '2026-11-01', 5000, 'ING'), merchant: 'Trade Republic' },
+    stmt('b', '2026-11-02', 3000, 'ING'), stmt('c', '2026-11-05', -3000, 'Trade Republic'),
+    stmt('d', '2026-11-05', 999, 'ING'),
+  ];
+  assert.deepEqual([...L.transfersIn(list, ['Trade Republic'])].sort(), ['a', 'b', 'c']);
 });
