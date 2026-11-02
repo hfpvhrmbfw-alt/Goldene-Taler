@@ -158,3 +158,12 @@ test('transfersIn: Bestand nachträglich prüfen', () => {
   ];
   assert.deepEqual([...L.transfersIn(list, ['Trade Republic'])].sort(), ['a', 'b', 'c']);
 });
+
+test('Stand am Ende des Auszugs: Saldo nach der letzten Zeile (TR), „Neuer Saldo“ (ING)', () => {
+  const tr = S.parseStatement(trPages());
+  assert.equal(tr.card, 'Trade Republic');
+  assert.deepEqual(tr.closing, { cents: 2610, date: '2026-11-07' });
+  const ing = S.parseStatement(ingPages());
+  assert.equal(ing.card, 'ING');
+  assert.deepEqual(ing.closing, { cents: 369368, date: '2027-01-09' });
+});

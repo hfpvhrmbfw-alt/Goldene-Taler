@@ -63,7 +63,8 @@ const isHeading = (s) => /^[A-ZÄÖÜ][A-ZÄÖÜ ]{7,}$/.test(s);
  * ZAHLUNGSEINGANG · ZAHLUNGSAUSGANG · SALDO. Ob Eingang oder Ausgang, ergibt sich aus der Saldo-Änderung;
  * die Kopfzeile beider Spalten ist ein einziges Textstück und taugt nicht zur Zuordnung.
  * @param {PdfPage[]} pages
- * @returns {{rows: StatementRow[], errors: number}}
+ * @returns {{rows: StatementRow[], errors: number, closing: {cents: number, date: string}|null}}
+ *   closing = Saldo nach der letzten Zeile (Stand des Kontos am Ende des Auszugs)
  */
 export function parseTradeRepublic(pages) {
   const raw = [];
@@ -138,6 +139,8 @@ export function parseTradeRepublic(pages) {
     return { ...r, a, s, dir };
   });
   const avg = (l) => l.reduce((x, y) => x + y, 0) / l.length;
+  const last = sized.filter((r) => Number.isInteger(r.s)).pop();
+  const closing = last ? { cents: last.s, date: last.date } : null;
   let errors = 0;
   const rows = [];
   for (const r of sized) {
@@ -156,7 +159,7 @@ export function parseTradeRepublic(pages) {
       key: `tr|${r.date}|${r.type}|${r.desc}|${cents}|${r.s}`,
     });
   }
-  return { rows, errors };
+  return { rows, errors, closing };
 }
 
 // ---------- ING ----------
@@ -172,13 +175,20 @@ const PAYPAL_SHOP = new RegExp(`${loose('Einkauf')}\\s+${loose('bei')}\\s+(.*?)\
 /**
  * Girokonto-Auszug der ING. Je Buchung: erste Zeile Buchungsdatum · Art · Name · Betrag (mit Vorzeichen),
  * zweite Zeile Valuta · Verwendungszweck, danach weitere Zeilen Verwendungszweck.
+ * Der Stand am Ende steht in der Zeile „Neuer Saldo“, sein Datum ist der letzte Buchungstag.
  * @param {PdfPage[]} pages
- * @returns {{rows: StatementRow[], errors: number}}
+ * @returns {{rows: StatementRow[], errors: number, closing: {cents: number, date: string}|null}}
  */
 export function parseIng(pages) {
   const recs = [];
+  let saldo = null;
   for (const page of pages) {
     const items = clean(page);
+    for (const line of pageLines(items)) {
+      if (!/^Neuer\s*Saldo$/i.test(line.items[0]?.s || '')) continue;
+      const v = line.items.find((i) => ING_AMOUNT.test(i.s));
+      if (v) saldo = parseAmount(v.s).cents;
+    }
     const head = items.find((i) => /^Buchung\s*\/\s*Verwendungszweck$/i.test(i.s));
     if (!head) continue;
     const vzX = head.x;
@@ -233,7 +243,8 @@ export function parseIng(pages) {
       key: `ing|${r.booking}|${r.valuta || ''}|${type}|${name}|${vz}|${cents}`,
     });
   }
-  return { rows, errors };
+  const lastBooking = recs.map((r) => r.booking.match(DATE_DE)).filter(Boolean).map((m) => ymd(m[3], m[2], m[1])).sort().pop();
+  return { rows, errors, closing: saldo !== null && lastBooking ? { cents: saldo, date: lastBooking } : null };
 }
 
 // ---------- gemeinsam ----------
@@ -245,13 +256,14 @@ export function parseIng(pages) {
  * IDs entstehen aus dem Inhalt der Zeile: Dieselbe Datei (oder ein überlappender Zeitraum) legt nichts doppelt an.
  * @param {PdfPage[]} pages
  * @param {string} currency
- * @returns {{ok: true, bank: 'traderepublic'|'ing', transactions: import('./model.js').Transaction[], ignored: number, errors: number}
+ * @returns {{ok: true, bank: 'traderepublic'|'ing', transactions: import('./model.js').Transaction[], ignored: number, errors: number,
+ *            card: string, closing: {cents: number, date: string}|null}
  *          | {ok: false, error: 'unknown'|'empty'}}
  */
 export function parseStatement(pages, currency = 'EUR') {
   const bank = detectBank(pages);
   if (!bank) return { ok: false, error: 'unknown' };
-  const { rows, errors } = bank === 'traderepublic' ? parseTradeRepublic(pages) : parseIng(pages);
+  const { rows, errors, closing } = bank === 'traderepublic' ? parseTradeRepublic(pages) : parseIng(pages);
   if (!rows.length && !errors) return { ok: false, error: 'empty' };
   const seen = new Map();
   const transactions = [];
@@ -267,5 +279,5 @@ export function parseStatement(pages, currency = 'EUR') {
       categoryId: null, manualCategory: false, note: '', source: 'statement', kind: r.kind,
     }));
   }
-  return { ok: true, bank, transactions, ignored: rows.length - transactions.length, errors };
+  return { ok: true, bank, transactions, ignored: rows.length - transactions.length, errors, card: bank === 'ing' ? 'ING' : 'Trade Republic', closing };
 }

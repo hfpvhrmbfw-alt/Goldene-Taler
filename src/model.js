@@ -24,6 +24,22 @@ export const KINDS = ['expense', 'income', 'saving', 'transfer', 'balance'];
 /** Art einer Kategorie: expense, income, balance (gleicht sich aus) oder saving. */
 export const CATEGORY_KINDS = ['expense', 'income', 'balance', 'saving'];
 
+/** Art eines Kontos: konto = Girokonto, Konto mit Karte, Unterkonto; tagesgeld; depot. */
+export const ACCOUNT_TYPES = ['konto', 'tagesgeld', 'depot'];
+
+/**
+ * @typedef {Object} Account
+ * @property {string} id
+ * @property {string} bank       Name der Bank, fasst Konten zusammen ("ING")
+ * @property {string} name       "Girokonto", "Extra-Konto", "Kinderdepot"
+ * @property {'konto'|'tagesgeld'|'depot'} type
+ * @property {boolean} main      Eingangskonto: hier kommt das Gehalt an, hier wird „frei für den Monat“ gerechnet
+ * @property {boolean} other     gehört jemand anderem (z. B. Kinderdepot): wird gezeigt, zählt nicht zum eigenen Vermögen
+ * @property {number|null} rateBp  Zinsen pro Jahr in Basispunkten (250 = 2,5 %), null = keine Angabe
+ * @property {string[]} match    woran Taler das Konto erkennt: Kartenname, Name im Verwendungszweck, IBAN
+ * @property {{cents: number, date: string, source: 'manual'|'statement'}|null} balance  letzter bekannter Stand
+ */
+
 /**
  * @typedef {Object} Category
  * @property {string} id       stabil; die mitgelieferten behalten ihre ID, eigene heißen c-…
@@ -48,6 +64,8 @@ export const CATEGORY_KINDS = ['expense', 'income', 'balance', 'saving'];
  * @property {string} note
  * @property {'shortcut'|'manual'|'demo'|'statement'} source
  * @property {boolean} excluded     true = zählt in keiner Summe mit (z. B. für andere ausgelegt)
+ * @property {string|null} accountId    von Hand gewähltes Konto (sonst erkennt Taler es an der Karte)
+ * @property {string|null} toAccountId  von Hand gewähltes Gegenkonto bei Umbuchung oder Sparen
  */
 
 /**
@@ -77,6 +95,7 @@ export function emptyTransaction(id, date) {
   return {
     id, date, time: null, amountCents: 0, currency: 'EUR', baseCents: null, merchant: '', card: '',
     categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false, kind: 'expense',
+    accountId: null, toAccountId: null,
   };
 }
 
@@ -105,6 +124,8 @@ export function sanitizeTransaction(raw) {
     source: SOURCES.includes(raw.source) ? raw.source : 'manual',
     excluded: raw.excluded === true,
     kind: KINDS.includes(raw.kind) ? raw.kind : 'expense',
+    accountId: str(raw.accountId, 80) || null,
+    toAccountId: str(raw.toAccountId, 80) || null,
   };
 }
 
@@ -133,6 +154,33 @@ export function sanitizeCategories(list) {
   return (Array.isArray(list) ? list : []).map(sanitizeCategory).filter((c) => c && !seen.has(c.id) && seen.add(c.id));
 }
 
+/** @returns {Account|null} */
+export function sanitizeAccount(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = str(raw.id, 80);
+  const name = str(raw.name, 40);
+  if (!id || !name) return null;
+  const b = raw.balance;
+  const balance = b && typeof b === 'object' && Number.isFinite(b.cents) && DATE_RE.test(b.date)
+    ? { cents: Math.round(b.cents), date: b.date, source: b.source === 'statement' ? 'statement' : 'manual' } : null;
+  return {
+    id, name,
+    bank: str(raw.bank, 40),
+    type: ACCOUNT_TYPES.includes(raw.type) ? raw.type : 'konto',
+    main: raw.main === true,
+    other: raw.other === true,
+    rateBp: Number.isFinite(raw.rateBp) && raw.rateBp >= 0 ? Math.round(raw.rateBp) : null,
+    match: [...new Set((Array.isArray(raw.match) ? raw.match : []).map((m) => str(m, 60)).filter(Boolean))].slice(0, 10),
+    balance,
+  };
+}
+
+/** Liste aus dem Speicher oder einer Sicherung; doppelte IDs fallen weg. */
+export function sanitizeAccounts(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map(sanitizeAccount).filter((a) => a && !seen.has(a.id) && seen.add(a.id));
+}
+
 /** @returns {Settings} */
 export function sanitizeSettings(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
@@ -150,7 +198,7 @@ export function sanitizeSettings(raw) {
 }
 
 /**
- * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]}} state
+ * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[], accounts: Account[]}} state
  * @param {string} exportedAt ISO-Zeitstempel
  */
 export function buildExport(state, exportedAt) {
@@ -160,6 +208,7 @@ export function buildExport(state, exportedAt) {
     exportedAt,
     settings: state.settings,
     categories: state.categories,
+    accounts: state.accounts,
     transactions: state.transactions,
     rules: state.rules,
     deletedIds: state.deletedIds,
@@ -169,7 +218,7 @@ export function buildExport(state, exportedAt) {
 /**
  * Prüft eine Sicherungsdatei.
  * @param {string} text
- * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, skipped: number}
+ * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, accounts: Account[]|null, skipped: number}
  *          | {ok: false, error: 'json'|'app'|'newer'|'shape'}}
  */
 export function parseImport(text) {
@@ -184,8 +233,9 @@ export function parseImport(text) {
   const deletedIds = (Array.isArray(data.deletedIds) ? data.deletedIds : []).filter((x) => typeof x === 'string');
   // Ältere Sicherungen haben keine Kategorienliste: dann bleiben die mitgelieferten.
   const categories = Array.isArray(data.categories) ? sanitizeCategories(data.categories) : null;
+  const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
   return {
-    ok: true, transactions, rules, deletedIds, categories,
+    ok: true, transactions, rules, deletedIds, categories, accounts,
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

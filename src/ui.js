@@ -3,8 +3,9 @@ import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
   yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind,
 } from './logic.js';
-import { DEFAULT_RULES } from './catalog.js';
-import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS } from './texts.js';
+import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor } from './accounts.js';
+import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
+import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -378,7 +379,7 @@ const SOURCE_LABELS = { shortcut: 'Apple Pay', statement: 'Kontoauszug', manual:
 export function listFilter(view, currency) {
   return {
     month: view.listMonth, kind: view.listKind, categoryIds: view.listCats, sources: view.listSources, hideExcluded: view.hideExcluded,
-    merchant: view.listMerchant, query: view.query, sort: view.sort, currency,
+    merchant: view.listMerchant, query: view.query, sort: view.sort, currency, ids: view.listAccount ? view.listAccount.ids : null,
   };
 }
 const filterCount = (view) => view.listCats.length + view.listSources.length + (view.hideExcluded ? 1 : 0);
@@ -404,7 +405,7 @@ export function renderList(el, state, view, clock) {
 
   let html = `
   <div class="titlerow">
-    <h2 class="bigtitle${view.listMerchant ? ' asis' : ''}">${view.listMerchant ? esc(view.listMerchant) : m ? esc(monthLabel(m)) : 'alle buchungen'}</h2>
+    <h2 class="bigtitle${view.listMerchant || (view.listAccount && !m) ? ' asis' : ''}">${view.listMerchant ? esc(view.listMerchant) : m ? esc(monthLabel(m)) : view.listAccount ? esc(view.listAccount.name) : 'alle buchungen'}</h2>
     ${m ? `<div class="pager">
       <button class="iconbtn" data-act="list-month" data-month="${months[idx + 1] || ''}" ${months[idx + 1] ? '' : 'disabled'} aria-label="Vorheriger Monat">${ICON.prev}</button>
       <button class="iconbtn" data-act="list-month" data-month="${months[idx - 1] || ''}" ${idx > 0 ? '' : 'disabled'} aria-label="Nächster Monat">${ICON.next}</button>
@@ -430,6 +431,7 @@ export function renderList(el, state, view, clock) {
   for (const c of view.listCats) chips.push(chip('clear-cat', `data-cat="${c ?? ''}"`, catLabel(c)));
   for (const k of view.listSources) chips.push(chip('clear-source', `data-source="${k}"`, SOURCE_LABELS[k]));
   if (view.hideExcluded) chips.push(chip('clear-excluded', '', 'ohne „zählt nicht mit“'));
+  if (view.listAccount) chips.push(chip('clear-account', '', view.listAccount.name));
   if (chips.length) html += `<div class="chips">${chips.join('')}</div>`;
 
   if (!groups.length) html += `<p class="empty">Keine Buchungen für diese Auswahl.</p>`;
@@ -555,8 +557,8 @@ export function renderSettings(el, state, view, info, clock) {
     ${item({ tag: 'button', attrs: 'data-act="goto" data-tab="rules"', title: 'Regeln', sub: `${custom} eigene · ${std} vorgegeben`, chev: true })}
   </ul>
 
-  ${head('eigene konten')}
-  <p class="muted small">Geld zwischen diesen Konten ist eine Umbuchung und zählt weder als Einnahme noch als Ausgabe. Dein Name oder deine IBAN passen auch.</p>
+  ${head('weitere eigene namen')}
+  <p class="muted small">Konten legst du unter <b>konten</b> an. Taler erkennt Umbuchungen an deren Namen und zusätzlich an diesen, z. B. deinem eigenen Namen oder einer IBAN. Geld dorthin zählt weder als Einnahme noch als Ausgabe.</p>
   <ul class="list">
     ${state.settings.ownAccounts.map((a) => item({ tag: 'button', attrs: `data-act="remove-account" data-name="${esc(a)}"`, title: esc(a), n: 'entfernen', nCls: 'muted' })).join('')}
   </ul>
@@ -684,4 +686,153 @@ export function buildCsv(transactions) {
     lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja', KIND_LABELS[kindOf(t)]].map(q).join(';'));
   }
   return '﻿' + lines.join('\r\n');
+}
+
+// ---------- Konten ----------
+
+/** „31.10.“ */
+const shortDate = (d) => `${Number(d.slice(8, 10))}.${Number(d.slice(5, 7))}.`;
+/** Zinssatz aus Basispunkten: 250 → „2,5 %“ */
+export const rateText = (bp) => `${String(bp / 100).replace('.', ',')} %`;
+/** Name mit Bank, wo der Name allein nicht reicht: „ING Girokonto“, „Scalable Capital Tagesgeld“. */
+export const accountLabel = (a) => (a.bank && !a.name.toLowerCase().includes(a.bank.toLowerCase()) ? `${a.bank} ${a.name}` : a.name);
+
+/** Woher der Stand kommt, in einem Halbsatz. */
+function balanceSource(b, a) {
+  if (!b) return 'noch kein Stand';
+  if (b.estimated) return `geschätzt: Stand ${shortDate(b.date)} plus ${a.type === 'depot' ? 'Sparpläne' : 'Umbuchungen'}`;
+  const base = b.source === 'statement' ? `laut Auszug vom ${shortDate(b.date)}` : `Stand vom ${shortDate(b.date)}`;
+  return b.since ? `${base}, dazu ${plural(b.since, 'Buchung', 'Buchungen')} seither` : base;
+}
+
+/** Zeile eines Kontos in der Kontenliste. */
+function accountRow(a, b, cur) {
+  const sub = [
+    a.main ? 'Eingangskonto' : a.type !== 'konto' && a.name !== ACCOUNT_TYPE_LABELS[a.type] ? ACCOUNT_TYPE_LABELS[a.type] : '',
+    a.rateBp ? `${rateText(a.rateBp)}${b ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}` : '',
+    a.other ? 'gehört jemand anderem · zählt nicht mit' : balanceSource(b, a),
+  ].filter(Boolean).join(' · ');
+  return item({
+    tag: 'button', cls: a.other ? 'other' : '', attrs: `data-act="open-account" data-id="${esc(a.id)}"`,
+    title: esc(a.name), sub: esc(sub), n: b ? money(b.cents, cur) : '—', chev: true,
+  });
+}
+
+/** Reiter „konten“: Vermögen, Banken mit Konten, Geldfluss im Monat. */
+export function renderAccounts(el, state, view, clock) {
+  const cur = state.settings.currency;
+  const accounts = state.accounts;
+  let html = `<h2 class="bigtitle">konten</h2>`;
+  if (!accounts.length) {
+    el.innerHTML = `${html}
+    <p class="meta-line">Gesamtbild über Girokonto, Tagesgeld und Depots</p>
+    <div class="emptyhero">${coin('big')}<p>Noch keine Konten. Leg deine Banken an, dann zeigt Taler dein Vermögen und wohin dein Geld jeden Monat fließt.</p></div>
+    <ul class="list">
+      ${Object.entries(BANK_TEMPLATES).map(([k, t]) => item({ tag: 'button', attrs: `data-act="template" data-bank="${k}"`, title: esc(t.bank), sub: esc(t.accounts.filter((x) => x.on).map((x) => x.name).join(', ')), chev: true })).join('')}
+      ${item({ tag: 'button', attrs: 'data-act="new-account"', title: 'Andere Bank', sub: 'Konto, Tagesgeld oder Depot von Hand', chev: true })}
+    </ul>`;
+    return;
+  }
+  const w = wealth(accounts, state.transactions, cur);
+  const banks = new Set(accounts.map((a) => a.bank)).size;
+  html += `<p class="meta-line">${plural(banks, 'Bank', 'Banken')} · ${plural(accounts.length, 'Konto', 'Konten')} · Stand heute</p>`;
+  const notes = [
+    w.otherCents ? `ohne ${money(w.otherCents, cur)} für jemand anderen` : '',
+    w.missing ? `${plural(w.missing, 'Konto', 'Konten')} noch ohne Stand` : '',
+  ].filter(Boolean).join(' · ');
+  const pos = Math.max(1, ['konto', 'tagesgeld', 'depot'].reduce((s, k) => s + Math.max(0, w.byType[k]), 0));
+  const share = (k) => (Math.max(0, w.byType[k]) / pos * 100).toFixed(1);
+  html += `<div class="saldo">
+    <div class="kpi hero"><div class="cap">mein vermögen</div><div class="v">${moneyHero(w.totalCents, cur)}</div>${notes ? `<div class="sub">${esc(notes)}</div>` : ''}</div>
+    ${w.totalCents > 0 ? `<div class="split wealth" role="img" aria-label="Konten ${money(w.byType.konto, cur)}, Tagesgeld ${money(w.byType.tagesgeld, cur)}, Depots ${money(w.byType.depot, cur)}"><span class="t-konto" style="width:${share('konto')}%"></span><span class="t-tagesgeld" style="width:${share('tagesgeld')}%"></span><span class="t-depot" style="width:${share('depot')}%"></span></div>
+    <div class="legend">${['konto', 'tagesgeld', 'depot'].map((k) => `<span><i class="t-${k}"></i>${{ konto: 'konten', tagesgeld: 'tagesgeld', depot: 'depots' }[k]} ${money(w.byType[k], cur)}</span>`).join('')}</div>` : ''}
+  </div>`;
+  for (const g of w.banks) {
+    html += `<h3 class="cap listhead bankhead"><span>${esc(g.bank || 'ohne bank')}</span><span>${money(g.cents, cur)}</span></h3><ul class="list">`;
+    html += g.items.map(({ account, balance }) => accountRow(account, balance, cur)).join('');
+    html += '</ul>';
+  }
+  html += `<ul class="list">${item({ tag: 'button', attrs: 'data-act="template"', title: '<span class="addtext">+ konto oder depot</span>' })}</ul>`;
+  const flows = monthFlows(state.transactions, accounts, clock.month, cur);
+  if (flows.length) {
+    const label = (a) => (a ? esc(accountLabel(a)) : 'unbekanntes Konto');
+    html += `${head(`geldfluss im ${monthName(clock.month).toLowerCase()}`)}<ul class="list flow">`;
+    for (const f of flows) {
+      const title = f.kind === 'income' ? `Einnahmen <em>→</em> ${label(f.to)}`
+        : f.kind === 'expense' ? `${label(f.from)} <em>→</em> Ausgaben` : `${label(f.from)} <em>→</em> ${label(f.to)}`;
+      const sub = f.kind === 'transfer' ? `Umbuchung${f.count > 1 ? ` · ${f.count}×` : ''}` : f.kind === 'saving' ? `Sparen · ${f.count}×` : `${f.count}×`;
+      html += item({ title, sub, n: f.kind === 'income' ? `<span class="in">+${money(f.cents, cur)}</span>` : money(f.cents, cur) });
+    }
+    html += '</ul><p class="barnote">Nur Buchungen, deren Konto Taler erkennt (Karte oder Kontoauszug). Umbuchungen zählen hier einmal, mit dem ausgehenden Teil.</p>';
+  }
+  el.innerHTML = html;
+}
+
+/** Ein Konto: Stand, beim Eingangskonto „frei für den Monat“, Fixkosten, Weiterleitungen, Aktionen. */
+export function renderAccount(el, state, view, clock) {
+  const cur = state.settings.currency;
+  const a = state.accounts.find((x) => x.id === view.accountId);
+  if (!a) { el.innerHTML = '<p class="empty">Dieses Konto gibt es nicht mehr.</p>'; return; }
+  const b = balanceOf(a, state.transactions, state.accounts, cur);
+  const meta = [a.bank, a.main ? 'Eingangskonto' : ACCOUNT_TYPE_LABELS[a.type], a.rateBp ? `${rateText(a.rateBp)} Zinsen` : '', a.other ? 'gehört jemand anderem' : ''].filter(Boolean).join(' · ');
+  let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
+  <div class="kpis"><div class="kpi hero"><div class="cap">stand</div><div class="v">${b ? moneyHero(b.cents, cur) : '—'}</div>
+    <div class="sub">${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
+  const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
+  let onward = [];
+  if (a.main) {
+    const f = freeForMonth(a, state.transactions, state.accounts, clock.month, clock.today, cur);
+    onward = f.onward;
+    if (f.inCents || f.fixedCents || f.onwardCents) {
+      html += `${head(`${monthName(f.month).toLowerCase()}: was frei bleibt`)}<ul class="list calc">
+        ${item({ title: 'Eingang', n: `<span class="in">+${money(f.inCents, cur)}</span>` })}
+        ${item({ title: 'Fixkosten', sub: 'was jeden Monat abgeht', n: `−${money(f.fixedCents, cur)}` })}
+        ${item({ title: 'weiter an eigene Konten', n: `−${money(f.onwardCents, cur)}` })}
+        ${item({ cls: 'sum', title: 'frei für den Monat', n: money(f.freeCents, cur) })}
+      </ul>`;
+    }
+  } else {
+    onward = monthFlows(state.transactions, state.accounts, clock.month, cur)
+      .filter((f) => (f.kind === 'transfer' || f.kind === 'saving') && f.from.id === a.id).map((f) => ({ to: f.to, cents: f.cents, count: f.count }));
+  }
+  const fixed = fixedCosts(a, state.transactions, state.accounts, clock.today).filter((r) => r.currency === cur);
+  if (fixed.length) {
+    const sum = fixed.reduce((s, r) => s + r.monthlyCents, 0);
+    html += `${foldOpen('fixed', 'fixkosten · jeden monat', money(sum, cur), view)}<ul class="list">
+      ${fixed.map((r) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `zuletzt am ${shortDate(r.lastDate)}`, n: money(r.monthlyCents, cur), chev: true })).join('')}
+    </ul></details>`;
+  }
+  if (onward.length) {
+    html += `${head('geht weiter an')}<ul class="list">
+      ${onward.map((o) => (o.to
+    ? item({ tag: 'button', attrs: `data-act="open-account" data-id="${esc(o.to.id)}"`, title: label(o.to), sub: `${plural(o.count, 'Buchung', 'Buchungen')} in diesem Monat`, n: money(o.cents, cur), chev: true })
+    : item({ title: label(null), sub: 'in der Buchung „an“ wählen', n: money(o.cents, cur) }))).join('')}
+    </ul>`;
+  }
+  const own = state.transactions.filter((t) => accountFor(t, state.accounts)?.id === a.id).length;
+  html += `<ul class="list">
+    ${own ? item({ tag: 'button', attrs: `data-act="account-list" data-id="${esc(a.id)}"`, title: 'Alle Buchungen dieses Kontos', sub: plural(own, 'Buchung', 'Buchungen'), chev: true }) : ''}
+    ${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-balance" data-id="${esc(a.id)}"`, title: 'Stand eintragen', sub: a.balance?.source === 'statement' ? 'kommt sonst aus dem Kontoauszug' : 'z. B. aus der Banking-App', chev: true })}
+    ${item({ tag: 'button', attrs: `data-act="edit-account" data-id="${esc(a.id)}"`, title: 'Konto bearbeiten', sub: esc(a.match.length ? `erkennen an ${a.match.map((m) => `„${m}“`).join(', ')}` : 'Name, Art, Zinsen, erkennen an'), chev: true })}
+  </ul>`;
+  el.innerHTML = html;
+}
+
+/** Blatt „konto oder depot“: Bank wählen, Konten aus der Vorlage anhaken. */
+export function renderTemplate(el, state, bankKey) {
+  const keys = Object.keys(BANK_TEMPLATES);
+  const t = BANK_TEMPLATES[bankKey];
+  const has = (x) => state.accounts.some((a) => a.bank === t.bank && a.name === x.name);
+  const opts = t ? t.accounts.map((x, i) => {
+    const there = has(x);
+    const rate = x.type === 'tagesgeld' || x.rate ? ` · Zinsen <input class="inline-input" name="rate-${i}" inputmode="decimal" placeholder="0,0 %" aria-label="Zinsen ${esc(x.name)}"${there ? ' disabled' : ''}>` : '';
+    return `<label class="tplopt"><input type="checkbox" name="pick-${i}"${x.on && !there ? ' checked' : ''}${there ? ' disabled' : ''}><span><b>${esc(x.name)}</b><span>${there ? 'schon angelegt' : `${esc(x.hint)}${rate}`}</span></span></label>`;
+  }).join('') : '';
+  el.innerHTML = `<form method="dialog" class="stack" id="tpl-form">
+    <div class="sheethead"><h2 id="tpl-title">konto oder depot</h2></div>
+    <div class="chipset">${keys.map((k) => `<button type="button" class="pill${k === bankKey ? ' on' : ''}" data-tpl="${k}" aria-pressed="${k === bankKey}">${esc(BANK_TEMPLATES[k].bank)}</button>`).join('')}<button type="button" class="pill" data-tpl="other">andere Bank</button></div>
+    ${t ? `<p class="muted small">Für ${esc(t.bank)} legt Taler an, was du anhakst. Namen und Arten lassen sich danach ändern.</p><div>${opts}</div>`
+    : '<p class="muted small">Wähle deine Bank oder „andere Bank“ für ein Konto von Hand.</p>'}
+    <div class="actions sticky">${t ? '<button class="btn primary" value="save">anlegen</button>' : ''}<button class="btn" value="cancel" formnovalidate>abbrechen</button></div>
+  </form>`;
 }

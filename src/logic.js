@@ -483,7 +483,7 @@ export function ruleDefault(transactions, pattern) {
  * @param {import('./model.js').Transaction[]} transactions
  * @param {{month?: string|null, categoryId?: string|null|undefined, query?: string, merchant?: string|null, currency?: string}} filter
  *   categoryId: undefined = alle, null = ohne Kategorie; categoryIds: mehrere (leer = alle)
- *   kind: Art; sources: Quellen; hideExcluded; sort: 'new' (Standard) | 'old' | 'big' (größter Betrag, ohne Tage)
+ *   kind: Art; sources: Quellen; hideExcluded; ids: nur diese Buchungen (Set, z. B. eines Kontos); sort: 'new' (Standard) | 'old' | 'big' (größter Betrag, ohne Tage)
  * @returns {{date: string|null, totalCents: number, incomeCents: number, foreign: {currency: string, cents: number, count: number}[], items: import('./model.js').Transaction[]}[]}
  *   totalCents = Ausgaben in der Hauptwährung ohne ausgenommene, incomeCents = Einnahmen (positiv);
  *   Fremdwährung ohne Euro-Betrag in `foreign`
@@ -499,6 +499,7 @@ export function groupByDay(transactions, filter = {}) {
     && (!filter.sources || !filter.sources.length || filter.sources.includes(t.source))
     && (!filter.hideExcluded || !t.excluded)
     && (!filter.merchant || t.merchant === filter.merchant)
+    && (!filter.ids || filter.ids.has(t.id))
     && (!q || t.merchant.toLowerCase().includes(q) || t.note.toLowerCase().includes(q)));
   const sort = filter.sort || 'new';
   if (sort === 'old') list.reverse();
@@ -635,7 +636,7 @@ export function findTransfers(existing, incoming) {
 }
 
 const squash = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
-const wordIn = (text, word) => {
+export const wordIn = (text, word) => {
   const w = word.toLowerCase().trim();
   if (!w) return false;
   const esc = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
