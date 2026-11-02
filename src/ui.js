@@ -5,6 +5,7 @@ import {
 } from './logic.js';
 import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
+import { PRICE_SOURCE, PRICE_KEY_URL } from './prices.js';
 import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS, POSITION_KIND_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -567,6 +568,9 @@ export function renderSettings(el, state, view, info, clock) {
     <button class="btn">hinzufügen</button>
   </form>
 
+  ${head('kurse aus dem netz')}
+  ${priceKeyBlock(info, clock.today)}
+
   ${head('hilfe')}
   <details id="setup-details"><summary>kurzbefehl einrichten</summary><div>
     <ol class="steps">
@@ -780,7 +784,7 @@ export function renderAccounts(el, state, view, clock) {
 }
 
 /** Ein Konto: Stand, beim Eingangskonto „frei für den Monat“, Fixkosten, Weiterleitungen, Aktionen. */
-export function renderAccount(el, state, view, clock) {
+export function renderAccount(el, state, view, clock, info = {}) {
   const cur = state.settings.currency;
   const a = state.accounts.find((x) => x.id === view.accountId);
   if (!a) { el.innerHTML = '<p class="empty">Dieses Konto gibt es nicht mehr.</p>'; return; }
@@ -790,7 +794,7 @@ export function renderAccount(el, state, view, clock) {
   let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
   <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v">${b ? moneyHero(b.cents, cur) : '—'}</div>
     <div class="sub">${d && d.costCents ? `<span class="${d.gainCents >= 0 ? 'gain' : 'loss'}">${signed(d.gainCents, cur)} (${gainPct(d.gainCents, d.costCents).replace(/<[^>]+>/g, '')})</span> seit Kauf · ` : ''}${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
-  if (a.type === 'depot') html += depotBlocks(a, d, state, cur);
+  if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info);
   const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
   let onward = [];
   if (a.main) {
@@ -850,11 +854,31 @@ export function renderTemplate(el, state, bankKey) {
   </form>`;
 }
 
+/** Einstellungen: Schlüssel für Kurse aus dem Netz. */
+function priceKeyBlock(info, today) {
+  if (info.priceKey) {
+    const f = info.priceFetch;
+    const last = !f ? 'noch nicht abgerufen' : `zuletzt ${f.date === today ? 'heute' : `am ${shortDate(f.date)}`}${f.ok ? '' : ', hat nicht geklappt'}`;
+    return `<ul class="list" id="price-key">
+    ${item({ tag: 'button', cls: 'action', attrs: 'data-act="fetch-prices"', title: 'Kurse jetzt holen', sub: `Schlüssel gespeichert · ${last}`, chev: true })}
+    ${item({ tag: 'button', attrs: 'data-act="remove-price-key"', title: 'Schlüssel entfernen', sub: 'Kurse wieder nur von Hand', n: 'entfernen', nCls: 'muted' })}
+  </ul>`;
+  }
+  return `<div id="price-key"><p class="muted small">Taler holt die Schlusskurse deiner Aktien und ETFs einmal am Tag über die ISIN von ${PRICE_SOURCE}. Dafür brauchst du einen kostenlosen Schlüssel: auf <a href="${PRICE_KEY_URL}" target="_blank" rel="noopener">eodhd.com</a> registrieren, im Dashboard den <b>API Token</b> kopieren und hier einfügen. Ins Netz geht nur die ISIN, keine Beträge. Gratis sind 20 Abrufe am Tag, Taler braucht einen je Wertpapier.</p>
+  <form class="inlineform" id="price-key-form">
+    <label class="field"><span class="visually-hidden">Schlüssel von ${PRICE_SOURCE}</span><input name="key" placeholder="API Token einfügen" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="80"></label>
+    <button class="btn">speichern</button>
+  </form></div>`;
+}
+
 /** Depot: Positionen, Sparpläne aus dem Auszug, Kurse. */
-function depotBlocks(a, d, state, cur) {
+function depotBlocks(a, d, state, cur, info) {
+  const online = !!info.priceKey;
+  // Datum nur dort zeigen, wo ein Kurs älter ist als die anderen.
+  const newest = (d ? d.items : []).reduce((m, x) => (x.position.priceDate > m ? x.position.priceDate : m), '');
   let html = `${head('positionen')}<ul class="list">`;
   for (const { position: p, value: v } of d ? d.items : []) {
-    const sub = [POSITION_KIND_LABELS[p.kind], `${unitsText(v.unitsMicro)} Stück`, p.plan && v.buys ? `${plural(v.buys, 'Sparplan-Kauf', 'Sparplan-Käufe')} dazu` : '', p.priceCents === null ? 'noch kein Kurs' : ''].filter(Boolean).join(' · ');
+    const sub = [POSITION_KIND_LABELS[p.kind], `${unitsText(v.unitsMicro)} Stück`, p.plan && v.buys ? `${plural(v.buys, 'Sparplan-Kauf', 'Sparplan-Käufe')} dazu` : '', p.priceCents === null ? 'noch kein Kurs' : '', online && !p.isin ? 'ohne ISIN, Kurs von Hand' : p.priceDate && p.priceDate < newest ? `Kurs vom ${shortDate(p.priceDate)}` : ''].filter(Boolean).join(' · ');
     html += item({
       tag: 'button', attrs: `data-act="edit-position" data-id="${esc(p.id)}"`, title: esc(p.name), sub: esc(sub),
       n: `${money(v.valueCents ?? v.costCents, cur)}${v.gainCents !== null ? gainPct(v.gainCents, v.costCents) : ''}`, chev: true,
@@ -875,8 +899,13 @@ function depotBlocks(a, d, state, cur) {
     html += '</ul>';
   }
   if (d) {
-    html += `<div class="note info"><span class="cap">kurse</span>Taler holt nichts aus dem Netz. Kurse trägst du ab und zu ein.${d.priceDate ? ` Die ältesten sind vom ${shortDate(d.priceDate)}` : ''}</div>
-    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse aktualisieren', sub: 'alle Positionen auf einer Seite', chev: true })}</ul>`;
+    const oldest = d.priceDate ? ` Die ältesten sind vom ${shortDate(d.priceDate)}` : '';
+    const failed = online && info.priceFetch && !info.priceFetch.ok ? ' Der letzte Abruf hat nicht geklappt.' : '';
+    html += online
+      ? `<div class="note info"><span class="cap">kurse</span>Taler holt einmal am Tag die Schlusskurse aus dem Netz (${PRICE_SOURCE}), über die ISIN.${oldest}${failed}</div>
+    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: 'data-act="fetch-prices"', title: 'Kurse jetzt holen', sub: info.fetchingPrices ? 'läuft gerade …' : 'Schlusskurs vom letzten Handelstag', chev: true })}${item({ tag: 'button', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse von Hand', sub: 'für Positionen ohne ISIN', chev: true })}</ul>`
+      : `<div class="note info"><span class="cap">kurse</span>Kurse trägst du von Hand ein.${oldest} Mit einem kostenlosen Schlüssel holt Taler sie selbst aus dem Netz.</div>
+    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse aktualisieren', sub: 'alle Positionen auf einer Seite', chev: true })}${item({ tag: 'button', attrs: 'data-act="goto-prices"', title: 'Kurse aus dem Netz einrichten', sub: 'einmalig, in den Einstellungen', chev: true })}</ul>`;
   }
   return html;
 }
