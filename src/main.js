@@ -1,9 +1,9 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
-import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts } from './accounts.js';
+import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
@@ -27,12 +27,12 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [] };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [] };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
   importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true, fixed: true }, budgetShow: null, editKind: 'expense', catEditing: null,
-  accountId: null, listAccount: null, tplBank: null, accountEditing: null, accountType: 'konto',
+  accountId: null, listAccount: null, tplBank: null, accountEditing: null, accountType: 'konto', positionEditing: null, positionKind: 'etf', pricesAccount: null,
 };
 // Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
 for (const k of Object.keys(view.folds)) {
@@ -45,6 +45,7 @@ const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standa
 function setCategories(list) { state.categories = list; ui.setCategories(list); }
 async function saveCategories() { await db.setMeta('categories', state.categories); }
 async function saveAccounts() { await db.setMeta('accounts', state.accounts); }
+async function savePositions() { await db.setMeta('positions', state.positions); }
 const newAccountId = (i = 0) => `a-${Date.now().toString(36)}${i ? `-${i}` : ''}`;
 /** Alle Namen, an denen Taler eigene Konten erkennt (Konten und weitere Namen aus den Einstellungen). */
 const own = () => ownNames(state.settings, state.accounts);
@@ -65,7 +66,7 @@ async function reapplyRules() {
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -82,6 +83,7 @@ async function restore(snap) {
   await db.setMeta('settings', state.settings);
   await saveCategories();
   await saveAccounts();
+  await savePositions();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -368,11 +370,13 @@ async function restoreBackup(text) {
   state.deletedIds = r.deletedIds;
   setCategories(withDefaults(r.categories || []));
   state.accounts = r.accounts || [];
+  state.positions = r.positions;
   view.budgetShow = null;
   await saveTransactions(state.transactions);
   await saveRules();
   await saveCategories();
   await saveAccounts();
+  await savePositions();
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
@@ -896,8 +900,10 @@ async function deleteAccountEditor() {
     .map((t) => ({ ...t, accountId: t.accountId === a.id ? null : t.accountId, toAccountId: t.toAccountId === a.id ? null : t.toAccountId }));
   const byId = new Map(changed.map((t) => [t.id, t]));
   state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
+  state.positions = state.positions.filter((p) => p.accountId !== a.id);
   await saveTransactions(changed);
   await saveAccounts();
+  await savePositions();
   if (view.tab === 'account') selectTab('accounts'); else render();
   undoable(`„${a.name}“ gelöscht, die Buchungen bleiben`, snap);
 }
@@ -954,6 +960,102 @@ async function saveBalanceEditor() {
   await saveAccounts();
   render();
   undoable('Stand gespeichert', snap);
+  return true;
+}
+
+// ---------- Depots ----------
+/** Stück aus der Eingabe („12,5“, „1.234,567“) in Millionstel; leer → 0; Unsinn → null. */
+const parseUnits = (text) => (String(text || '').trim() ? quantityIn(`Stück ${text.trim()}`) : 0);
+
+function setPositionKind(kind) {
+  view.positionKind = kind;
+  for (const b of document.querySelectorAll('#position-kind [data-pkind]')) b.setAttribute('aria-pressed', String(b.dataset.pkind === kind));
+}
+
+/** Position eintragen oder ändern. Bei einer bestehenden stehen Stück und Kaufwert inklusive der Sparplan-Käufe bis heute. */
+function openPositionEditor(id, { accountId = null, isin = '', name = '' } = {}) {
+  const p = id ? state.positions.find((x) => x.id === id) : null;
+  const acc = state.accounts.find((a) => a.id === (p ? p.accountId : accountId));
+  if (!acc) return;
+  view.positionEditing = { p, accountId: acc.id };
+  const v = p ? positionValue(p, state.transactions, state.accounts, state.settings.currency) : null;
+  const f = $('#position-form');
+  f.name.value = p ? p.name : name;
+  f.isin.value = p ? p.isin : isin;
+  f.units.value = v ? ui.unitsText(v.unitsMicro) : '';
+  f.cost.value = v && v.costCents ? ui.amountInput(v.costCents) : '';
+  f.price.value = p?.priceCents != null ? ui.amountInput(p.priceCents) : '';
+  f.priceDate.value = p?.priceDate || clock().today;
+  f.plan.checked = p ? p.plan : !!isin;
+  setPositionKind(p ? p.kind : 'etf');
+  $('#position-hint').textContent = `im ${acc.name === 'Depot' ? `Depot von ${acc.bank}` : acc.name}`;
+  $('#position-title').textContent = p ? 'position ändern' : 'aktie oder etf';
+  $('#position-delete').hidden = !p;
+  $('#position-error').hidden = true;
+  openSheet($('#position-dialog'));
+  if (!p && !name) f.name.focus();
+}
+
+async function savePositionEditor() {
+  const f = $('#position-form');
+  const { p, accountId } = view.positionEditing;
+  const err = (t) => { $('#position-error').textContent = t; $('#position-error').hidden = false; return false; };
+  const units = parseUnits(f.units.value);
+  const cost = f.cost.value.trim() ? parseAmount(f.cost.value) : { cents: 0 };
+  const price = f.price.value.trim() ? parseAmount(f.price.value) : null;
+  if (!f.name.value.trim()) return err('Bitte einen Namen angeben.');
+  if (units === null) return err('Stück bitte als Zahl angeben, z. B. 12,5.');
+  if (!cost || (f.price.value.trim() && !price)) return err('Beträge bitte als Zahl angeben, z. B. 1.250,00.');
+  const today = clock().today;
+  const snap = snapshot();
+  const next = sanitizePosition({
+    id: p ? p.id : `p-${Date.now().toString(36)}`, accountId, name: f.name.value, isin: f.isin.value, kind: view.positionKind,
+    unitsMicro: units, costCents: Math.abs(cost.cents), date: today,
+    priceCents: price ? Math.abs(price.cents) : p?.priceCents ?? null, priceDate: price ? f.priceDate.value || today : p?.priceDate ?? null,
+    plan: f.plan.checked,
+  });
+  if (!next) return err('Bitte Name und Datum prüfen.');
+  state.positions = p ? state.positions.map((x) => (x.id === p.id ? next : x)) : [...state.positions, next];
+  await savePositions();
+  render();
+  undoable(p ? 'Position gespeichert' : `„${next.name}“ eingetragen`, snap);
+  return true;
+}
+
+async function deletePositionEditor() {
+  const { p } = view.positionEditing;
+  if (!p) return;
+  closeSheet($('#position-dialog'));
+  const snap = snapshot();
+  state.positions = state.positions.filter((x) => x.id !== p.id);
+  await savePositions();
+  render();
+  undoable(`„${p.name}“ gelöscht`, snap);
+}
+
+function openPrices(accountId) {
+  view.pricesAccount = accountId;
+  ui.renderPrices($('#prices-body'), state, accountId, clock().today);
+  openSheet($('#prices-dialog'));
+}
+
+async function savePrices() {
+  const f = $('#prices-form');
+  const date = f.date.value || clock().today;
+  const updates = new Map();
+  for (const p of state.positions.filter((x) => x.accountId === view.pricesAccount)) {
+    const v = f[`price-${p.id}`]?.value.trim();
+    if (!v) continue;
+    const a = parseAmount(v);
+    if (!a) { toast(`Kurs für „${p.name}“ bitte als Zahl angeben`); return false; }
+    updates.set(p.id, { ...p, priceCents: Math.abs(a.cents), priceDate: date });
+  }
+  if (!updates.size) return true;
+  const snap = snapshot();
+  state.positions = state.positions.map((p) => updates.get(p.id) || p);
+  await savePositions();
+  render();
+  undoable(`${updates.size} ${updates.size === 1 ? 'Kurs' : 'Kurse'} gespeichert`, snap);
   return true;
 }
 
@@ -1061,6 +1163,9 @@ function bind() {
     if (act === 'edit-account') openAccountEditor(b.dataset.id);
     if (act === 'edit-balance') openBalanceEditor(b.dataset.id);
     if (act === 'account-list') showAccountList(b.dataset.id);
+    if (act === 'new-position') openPositionEditor(null, { accountId: b.dataset.account, isin: b.dataset.isin || '', name: b.dataset.name || '' });
+    if (act === 'edit-position') openPositionEditor(b.dataset.id);
+    if (act === 'edit-prices') openPrices(b.dataset.id);
     if (act === 'clear-account') { view.listAccount = null; if (view.from === 'account') view.from = null; render(); }
     if (act === 'sort') openSorter();
     if (act === 'setup') { selectTab('settings'); const d = $('#setup-details'); if (d) { d.open = true; d.scrollIntoView({ block: 'start' }); } }
@@ -1083,7 +1188,7 @@ function bind() {
     if (act === 'export-json') await saveBackup();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten.', 'Alles löschen', { danger: true })) {
       await db.clear();
-      Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [], accounts: [] });
+      Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [], accounts: [], positions: [] });
       setCategories(DEFAULT_CATEGORIES);
       view.budgetShow = null;
       await saveRules();
@@ -1257,6 +1362,20 @@ function bind() {
     const t = e.target.closest('[data-atype]')?.dataset.atype;
     if (t) setAccountType(t);
   });
+  $('#position-form').addEventListener('submit', async (e) => {
+    const action = e.submitter?.value;
+    if (action === 'save') { e.preventDefault(); if (await savePositionEditor()) closeSheet($('#position-dialog'), 'save'); }
+    if (action === 'delete') { e.preventDefault(); await deletePositionEditor(); }
+  });
+  $('#position-kind').addEventListener('click', (e) => {
+    const k = e.target.closest('[data-pkind]')?.dataset.pkind;
+    if (k) setPositionKind(k);
+  });
+  $('#prices-dialog').addEventListener('submit', async (e) => {
+    if (e.submitter?.value !== 'save') return;
+    e.preventDefault();
+    if (await savePrices()) closeSheet($('#prices-dialog'), 'save');
+  });
   $('#balance-form').addEventListener('submit', async (e) => {
     if (e.submitter?.value !== 'save') return;
     e.preventDefault();
@@ -1302,6 +1421,7 @@ async function start() {
   setCategories(withDefaults(sanitizeCategories(await db.getMeta('categories'))));
   const storedAccounts = await db.getMeta('accounts');
   state.accounts = sanitizeAccounts(storedAccounts);
+  state.positions = sanitizePositions(await db.getMeta('positions'));
   // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
   if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
     const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);

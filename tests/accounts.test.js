@@ -117,3 +117,54 @@ test('Sicherung: Konten und Kontozuordnung kommen mit', () => {
   assert.equal(r.transactions[0].toAccountId, 'scd');
   assert.equal(sanitizeAccount({ id: 'x', name: 'Y', rateBp: -1, type: 'bargeld' }).type, 'konto');
 });
+
+// ---------- Depots ----------
+import { sanitizePosition, sanitizePositions } from '../src/model.js';
+
+const PLAN = (date, cents, qty) => tx(date, `Savings plan execution IE0000000001 Beispiel Fonds - World ETF Accumulating, quantity: ${qty}`, cents, 'Trade Republic', 'saving');
+
+test('Sparplan-Zeilen: ISIN, Stück, Name', () => {
+  const text = 'Savings plan execution IE0000000001 Beispiel Fonds - World ETF Accumulating, quantity: 0.5';
+  assert.equal(A.isinIn(text), 'IE0000000001');
+  assert.equal(A.quantityIn(text), 500000);
+  assert.equal(A.quantityIn('Stück 1.234,567'), 1234567000);
+  assert.equal(A.quantityIn('Kartenzahlung'), null);
+  assert.equal(A.planName(text), 'Beispiel Fonds - World ETF Accumulating');
+});
+
+test('positionValue: eingetragener Stand plus Sparplan-Käufe danach, Wert aus Kurs', () => {
+  const p = sanitizePosition({ id: 'p1', accountId: 'trd', name: 'World ETF', isin: 'ie0000000001', kind: 'etf', unitsMicro: 10_000_000, costCents: 90000, date: '2026-10-31', priceCents: 10000, priceDate: '2026-10-31', plan: true });
+  assert.equal(p.isin, 'IE0000000001');
+  const buys = [PLAN('2026-10-02', 20000, '2.1'), PLAN('2026-11-02', 20000, '2'), PLAN('2026-12-02', 20000, '1.9')];
+  const v = A.positionValue(p, buys, ACCOUNTS);
+  // Nur die beiden Käufe nach dem 31.10.: 10 + 2 + 1,9 Stück, 900 + 200 + 200 €.
+  assert.deepEqual([v.buys, v.unitsMicro, v.costCents, v.valueCents, v.gainCents], [2, 13_900_000, 130000, 139000, 9000]);
+  assert.equal(A.positionValue({ ...p, plan: false }, buys, ACCOUNTS).unitsMicro, 10_000_000);
+  // Ein Kauf in ein anderes Depot zählt nicht.
+  assert.equal(A.positionValue(p, [{ ...buys[1], toAccountId: 'scd' }], ACCOUNTS).buys, 0);
+});
+
+test('depotValue: Summe der Positionen, ohne Kurs zählt der Kaufwert, ältester Kurs; Stand des Depots daraus', () => {
+  const positions = sanitizePositions([
+    { id: 'a', accountId: 'trd', name: 'A', unitsMicro: 2_000_000, costCents: 10000, date: '2026-10-01', priceCents: 6000, priceDate: '2026-10-30' },
+    { id: 'b', accountId: 'trd', name: 'B', unitsMicro: 1_000_000, costCents: 5000, date: '2026-10-01', priceCents: 4000, priceDate: '2026-10-20' },
+    { id: 'c', accountId: 'trd', name: 'C', unitsMicro: 1_000_000, costCents: 3000, date: '2026-10-01' },
+    { id: 'd', accountId: 'scd', name: 'D', unitsMicro: 1_000_000, costCents: 1, date: '2026-10-01' },
+  ]);
+  const d = A.depotValue(ACCOUNTS[3], positions, [], ACCOUNTS);
+  assert.deepEqual([d.cents, d.costCents, d.gainCents, d.priceDate, d.noPrice], [19000, 18000, 1000, '2026-10-20', 1]);
+  assert.deepEqual(d.items.map((i) => i.position.id), ['a', 'b', 'c']);
+  const b = A.balanceOf(ACCOUNTS[3], [], ACCOUNTS, 'EUR', positions);
+  assert.deepEqual([b.cents, b.source, b.count], [19000, 'positions', 3]);
+  assert.equal(A.depotValue(ACCOUNTS[1], positions, [], ACCOUNTS), null);
+  assert.equal(A.wealth(ACCOUNTS, [], 'EUR', positions).byType.depot, 19000 + 1);
+});
+
+test('depotPlans: Sparpläne je ISIN mit letztem Betrag und Stück', () => {
+  // Gleiche ISIN = ein Sparplan, auch wenn eine Zeile ohne Namen und Stück kommt.
+  const plans = A.depotPlans(ACCOUNTS[3], [PLAN('2026-10-02', 20000, '2.1'), DATA[5], PLAN('2026-12-02', 25000, '2')], ACCOUNTS);
+  assert.deepEqual(plans.map((p) => [p.isin, p.name, p.lastCents, p.lastDate, p.lastUnitsMicro, p.count]), [
+    ['IE0000000001', 'Beispiel Fonds - World ETF Accumulating', 25000, '2026-12-02', 2_000_000, 3],
+  ]);
+  assert.deepEqual(A.depotPlans(ACCOUNTS[5], DATA, ACCOUNTS), []);
+});

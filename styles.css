@@ -503,3 +503,7 @@ button.kpi.tap:active { background:var(--sunken); }
 .tplopt > span > span { color:var(--muted); font-size:calc(14*var(--u)); }
 .tplopt .inline-input { width:5em; }
 .ruleopt.twoline > span > span { display:block; margin-top:2px; }
+.item .n small { display:block; font-size:calc(13*var(--u)); color:var(--muted); }
+.item .n small.in { color:var(--ok); }
+.kpi .sub .gain { color:var(--ok); }
+.kpi .sub .loss { color:var(--err); }

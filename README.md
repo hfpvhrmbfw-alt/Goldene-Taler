@@ -49,6 +49,12 @@ der **Geldfluss** des Monats und beim **Eingangskonto** „frei für den Monat�
 eigene Konten weitergeht. Die frühere Liste „eigene Konten“ wurde beim ersten Start zu Konten (ING, Trade Republic),
 weitere Namen (eigener Name, IBAN) bleiben in den Einstellungen.
 
+**Depots**: Aktien, ETFs und Fonds mit Stück, Kaufwert und Kurs eintragen; der Wert des Depots ist dann die Summe der
+Positionen, mit Gewinn oder Verlust seit Kauf. Sparplan-Ausführungen aus dem Kontoauszug (gleiche ISIN) zählen künftig
+zu Kaufwert und Stück dazu, wenn die Zeile die Stückzahl nennt (Trade Republic: „quantity“). Sparpläne ohne Position
+stehen im Depot zum Eintragen bereit. Kurse holt Taler nicht aus dem Netz, sie stehen mit Datum da und lassen sich für
+alle Positionen auf einer Seite aktualisieren. Ein Depot ohne Positionen hat einen Wert von Hand.
+
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 

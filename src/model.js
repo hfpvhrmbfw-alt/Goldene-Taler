@@ -40,6 +40,26 @@ export const ACCOUNT_TYPES = ['konto', 'tagesgeld', 'depot'];
  * @property {{cents: number, date: string, source: 'manual'|'statement'}|null} balance  letzter bekannter Stand
  */
 
+/** Art einer Position im Depot. */
+export const POSITION_KINDS = ['etf', 'aktie', 'fonds', 'anderes'];
+
+/**
+ * Eine Aktie, ein ETF oder Fonds in einem Depot. Stück und Kaufwert gelten am Tag `date`; Sparplan-Ausführungen danach
+ * (gleiche ISIN im Auszug) zählen dazu, wenn `plan` an ist. Stück in Millionstel, damit Bruchstücke genau bleiben.
+ * @typedef {Object} Position
+ * @property {string} id
+ * @property {string} accountId   das Depot
+ * @property {string} name
+ * @property {string} isin        ISIN oder WKN, groß geschrieben, darf leer sein
+ * @property {'etf'|'aktie'|'fonds'|'anderes'} kind
+ * @property {number} unitsMicro  Stück × 1.000.000
+ * @property {number} costCents   Kaufwert gesamt
+ * @property {string} date        YYYY-MM-DD, Stand von Stück und Kaufwert
+ * @property {number|null} priceCents  Kurs je Stück
+ * @property {string|null} priceDate   YYYY-MM-DD
+ * @property {boolean} plan       Sparplan-Buchungen mit dieser ISIN dazuzählen
+ */
+
 /**
  * @typedef {Object} Category
  * @property {string} id       stabil; die mitgelieferten behalten ihre ID, eigene heißen c-…
@@ -181,6 +201,34 @@ export function sanitizeAccounts(list) {
   return (Array.isArray(list) ? list : []).map(sanitizeAccount).filter((a) => a && !seen.has(a.id) && seen.add(a.id));
 }
 
+/** @returns {Position|null} */
+export function sanitizePosition(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = str(raw.id, 80);
+  const accountId = str(raw.accountId, 80);
+  const name = str(raw.name, 60);
+  const date = str(raw.date, 10);
+  if (!id || !accountId || !name || !DATE_RE.test(date)) return null;
+  const int = (v) => (Number.isFinite(v) && v >= 0 ? Math.round(v) : 0);
+  const priceOk = Number.isFinite(raw.priceCents) && raw.priceCents >= 0 && DATE_RE.test(raw.priceDate);
+  return {
+    id, accountId, name, date,
+    isin: str(raw.isin, 12).toUpperCase().replace(/\s+/g, ''),
+    kind: POSITION_KINDS.includes(raw.kind) ? raw.kind : 'etf',
+    unitsMicro: int(raw.unitsMicro),
+    costCents: int(raw.costCents),
+    priceCents: priceOk ? Math.round(raw.priceCents) : null,
+    priceDate: priceOk ? raw.priceDate : null,
+    plan: raw.plan === true,
+  };
+}
+
+/** Liste aus dem Speicher oder einer Sicherung; doppelte IDs fallen weg. */
+export function sanitizePositions(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map(sanitizePosition).filter((p) => p && !seen.has(p.id) && seen.add(p.id));
+}
+
 /** @returns {Settings} */
 export function sanitizeSettings(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
@@ -198,7 +246,7 @@ export function sanitizeSettings(raw) {
 }
 
 /**
- * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[], accounts: Account[]}} state
+ * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[], accounts: Account[], positions: Position[]}} state
  * @param {string} exportedAt ISO-Zeitstempel
  */
 export function buildExport(state, exportedAt) {
@@ -209,6 +257,7 @@ export function buildExport(state, exportedAt) {
     settings: state.settings,
     categories: state.categories,
     accounts: state.accounts,
+    positions: state.positions,
     transactions: state.transactions,
     rules: state.rules,
     deletedIds: state.deletedIds,
@@ -218,7 +267,7 @@ export function buildExport(state, exportedAt) {
 /**
  * Prüft eine Sicherungsdatei.
  * @param {string} text
- * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, accounts: Account[]|null, skipped: number}
+ * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, accounts: Account[]|null, positions: Position[], skipped: number}
  *          | {ok: false, error: 'json'|'app'|'newer'|'shape'}}
  */
 export function parseImport(text) {
@@ -234,8 +283,9 @@ export function parseImport(text) {
   // Ältere Sicherungen haben keine Kategorienliste: dann bleiben die mitgelieferten.
   const categories = Array.isArray(data.categories) ? sanitizeCategories(data.categories) : null;
   const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
+  const positions = sanitizePositions(data.positions);
   return {
-    ok: true, transactions, rules, deletedIds, categories, accounts,
+    ok: true, transactions, rules, deletedIds, categories, accounts, positions,
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

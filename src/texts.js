@@ -22,6 +22,9 @@ export const IMPORT_ERRORS = {
 /** Arten von Konten, wie sie in Listen stehen. */
 export const ACCOUNT_TYPE_LABELS = { konto: 'Konto', tagesgeld: 'Tagesgeld', depot: 'Depot' };
 
+/** Arten von Positionen im Depot. */
+export const POSITION_KIND_LABELS = { etf: 'ETF', aktie: 'Aktie', fonds: 'Fonds', anderes: 'Anderes' };
+
 export const BANK_LABELS = { traderepublic: 'Trade Republic', ing: 'ING' };
 
 export const STATEMENT_ERRORS = {

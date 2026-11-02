@@ -3,9 +3,9 @@ import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
   yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind,
 } from './logic.js';
-import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor } from './accounts.js';
+import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
-import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS } from './texts.js';
+import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS, POSITION_KIND_LABELS } from './texts.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -700,13 +700,23 @@ export const accountLabel = (a) => (a.bank && !a.name.toLowerCase().includes(a.b
 /** Woher der Stand kommt, in einem Halbsatz. */
 function balanceSource(b, a) {
   if (!b) return 'noch kein Stand';
+  if (b.source === 'positions') return `${plural(b.count, 'Position', 'Positionen')} · ${b.date ? `Kurse vom ${shortDate(b.date)}` : 'noch ohne Kurse'}`;
   if (b.estimated) return `geschätzt: Stand ${shortDate(b.date)} plus ${a.type === 'depot' ? 'Sparpläne' : 'Umbuchungen'}`;
   const base = b.source === 'statement' ? `laut Auszug vom ${shortDate(b.date)}` : `Stand vom ${shortDate(b.date)}`;
   return b.since ? `${base}, dazu ${plural(b.since, 'Buchung', 'Buchungen')} seither` : base;
 }
 
+/** Stück: „72,418“ */
+export const unitsText = (micro) => new Intl.NumberFormat('de-DE', { maximumFractionDigits: 6 }).format(micro / 1e6);
+/** Gewinn oder Verlust in Prozent vom Kaufwert, grün bei Gewinn: „+8,2 %“. */
+const gainPct = (gain, cost) => {
+  if (!cost) return '';
+  const v = gain / cost * 100;
+  return `<small class="${v >= 0 ? 'in' : ''}">${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1).replace('.', ',')} %</small>`;
+};
+
 /** Zeile eines Kontos in der Kontenliste. */
-function accountRow(a, b, cur) {
+function accountRow(a, b, cur, d = null) {
   const sub = [
     a.main ? 'Eingangskonto' : a.type !== 'konto' && a.name !== ACCOUNT_TYPE_LABELS[a.type] ? ACCOUNT_TYPE_LABELS[a.type] : '',
     a.rateBp ? `${rateText(a.rateBp)}${b ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}` : '',
@@ -714,7 +724,7 @@ function accountRow(a, b, cur) {
   ].filter(Boolean).join(' · ');
   return item({
     tag: 'button', cls: a.other ? 'other' : '', attrs: `data-act="open-account" data-id="${esc(a.id)}"`,
-    title: esc(a.name), sub: esc(sub), n: b ? money(b.cents, cur) : '—', chev: true,
+    title: esc(a.name), sub: esc(sub), n: b ? `${money(b.cents, cur)}${d ? gainPct(d.gainCents, d.costCents) : ''}` : '—', chev: true,
   });
 }
 
@@ -733,7 +743,7 @@ export function renderAccounts(el, state, view, clock) {
     </ul>`;
     return;
   }
-  const w = wealth(accounts, state.transactions, cur);
+  const w = wealth(accounts, state.transactions, cur, state.positions);
   const banks = new Set(accounts.map((a) => a.bank)).size;
   html += `<p class="meta-line">${plural(banks, 'Bank', 'Banken')} · ${plural(accounts.length, 'Konto', 'Konten')} · Stand heute</p>`;
   const notes = [
@@ -749,7 +759,8 @@ export function renderAccounts(el, state, view, clock) {
   </div>`;
   for (const g of w.banks) {
     html += `<h3 class="cap listhead bankhead"><span>${esc(g.bank || 'ohne bank')}</span><span>${money(g.cents, cur)}</span></h3><ul class="list">`;
-    html += g.items.map(({ account, balance }) => accountRow(account, balance, cur)).join('');
+    html += g.items.map(({ account, balance }) => accountRow(account, balance, cur,
+      account.type === 'depot' ? depotValue(account, state.positions, state.transactions, accounts, cur) : null)).join('');
     html += '</ul>';
   }
   html += `<ul class="list">${item({ tag: 'button', attrs: 'data-act="template"', title: '<span class="addtext">+ konto oder depot</span>' })}</ul>`;
@@ -773,11 +784,13 @@ export function renderAccount(el, state, view, clock) {
   const cur = state.settings.currency;
   const a = state.accounts.find((x) => x.id === view.accountId);
   if (!a) { el.innerHTML = '<p class="empty">Dieses Konto gibt es nicht mehr.</p>'; return; }
-  const b = balanceOf(a, state.transactions, state.accounts, cur);
-  const meta = [a.bank, a.main ? 'Eingangskonto' : ACCOUNT_TYPE_LABELS[a.type], a.rateBp ? `${rateText(a.rateBp)} Zinsen` : '', a.other ? 'gehört jemand anderem' : ''].filter(Boolean).join(' · ');
+  const b = balanceOf(a, state.transactions, state.accounts, cur, state.positions);
+  const d = a.type === 'depot' ? depotValue(a, state.positions, state.transactions, state.accounts, cur) : null;
+  const meta = [a.bank, a.main ? 'Eingangskonto' : a.name !== ACCOUNT_TYPE_LABELS[a.type] ? ACCOUNT_TYPE_LABELS[a.type] : '', a.rateBp ? `${rateText(a.rateBp)} Zinsen` : '', a.other ? 'gehört jemand anderem' : ''].filter(Boolean).join(' · ');
   let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
-  <div class="kpis"><div class="kpi hero"><div class="cap">stand</div><div class="v">${b ? moneyHero(b.cents, cur) : '—'}</div>
-    <div class="sub">${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
+  <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v">${b ? moneyHero(b.cents, cur) : '—'}</div>
+    <div class="sub">${d && d.costCents ? `<span class="${d.gainCents >= 0 ? 'gain' : 'loss'}">${signed(d.gainCents, cur)} (${gainPct(d.gainCents, d.costCents).replace(/<[^>]+>/g, '')})</span> seit Kauf · ` : ''}${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
+  if (a.type === 'depot') html += depotBlocks(a, d, state, cur);
   const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
   let onward = [];
   if (a.main) {
@@ -809,10 +822,10 @@ export function renderAccount(el, state, view, clock) {
     : item({ title: label(null), sub: 'in der Buchung „an“ wählen', n: money(o.cents, cur) }))).join('')}
     </ul>`;
   }
-  const own = state.transactions.filter((t) => accountFor(t, state.accounts)?.id === a.id).length;
+  const own = state.transactions.filter((t) => accountFor(t, state.accounts)?.id === a.id || counterFor(t, state.accounts)?.id === a.id).length;
   html += `<ul class="list">
     ${own ? item({ tag: 'button', attrs: `data-act="account-list" data-id="${esc(a.id)}"`, title: 'Alle Buchungen dieses Kontos', sub: plural(own, 'Buchung', 'Buchungen'), chev: true }) : ''}
-    ${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-balance" data-id="${esc(a.id)}"`, title: 'Stand eintragen', sub: a.balance?.source === 'statement' ? 'kommt sonst aus dem Kontoauszug' : 'z. B. aus der Banking-App', chev: true })}
+    ${d ? '' : item({ tag: 'button', cls: 'action', attrs: `data-act="edit-balance" data-id="${esc(a.id)}"`, title: a.type === 'depot' ? 'Wert eintragen' : 'Stand eintragen', sub: a.type === 'depot' ? 'ohne einzelne Positionen' : a.balance?.source === 'statement' ? 'kommt sonst aus dem Kontoauszug' : 'z. B. aus der Banking-App', chev: true })}
     ${item({ tag: 'button', attrs: `data-act="edit-account" data-id="${esc(a.id)}"`, title: 'Konto bearbeiten', sub: esc(a.match.length ? `erkennen an ${a.match.map((m) => `„${m}“`).join(', ')}` : 'Name, Art, Zinsen, erkennen an'), chev: true })}
   </ul>`;
   el.innerHTML = html;
@@ -834,5 +847,48 @@ export function renderTemplate(el, state, bankKey) {
     ${t ? `<p class="muted small">Für ${esc(t.bank)} legt Taler an, was du anhakst. Namen und Arten lassen sich danach ändern.</p><div>${opts}</div>`
     : '<p class="muted small">Wähle deine Bank oder „andere Bank“ für ein Konto von Hand.</p>'}
     <div class="actions sticky">${t ? '<button class="btn primary" value="save">anlegen</button>' : ''}<button class="btn" value="cancel" formnovalidate>abbrechen</button></div>
+  </form>`;
+}
+
+/** Depot: Positionen, Sparpläne aus dem Auszug, Kurse. */
+function depotBlocks(a, d, state, cur) {
+  let html = `${head('positionen')}<ul class="list">`;
+  for (const { position: p, value: v } of d ? d.items : []) {
+    const sub = [POSITION_KIND_LABELS[p.kind], `${unitsText(v.unitsMicro)} Stück`, p.plan && v.buys ? `${plural(v.buys, 'Sparplan-Kauf', 'Sparplan-Käufe')} dazu` : '', p.priceCents === null ? 'noch kein Kurs' : ''].filter(Boolean).join(' · ');
+    html += item({
+      tag: 'button', attrs: `data-act="edit-position" data-id="${esc(p.id)}"`, title: esc(p.name), sub: esc(sub),
+      n: `${money(v.valueCents ?? v.costCents, cur)}${v.gainCents !== null ? gainPct(v.gainCents, v.costCents) : ''}`, chev: true,
+    });
+  }
+  html += item({ tag: 'button', attrs: `data-act="new-position" data-account="${esc(a.id)}"`, title: '<span class="addtext">+ aktie oder etf eintragen</span>' });
+  html += '</ul>';
+  const plans = depotPlans(a, state.transactions, state.accounts);
+  if (plans.length) {
+    html += `${head('sparpläne · aus dem kontoauszug')}<ul class="list">`;
+    for (const pl of plans) {
+      const known = pl.isin && state.positions.some((p) => p.accountId === a.id && p.isin === pl.isin);
+      const sub = [`zuletzt am ${shortDate(pl.lastDate)}`, pl.lastUnitsMicro ? `${unitsText(pl.lastUnitsMicro)} Stück` : '', known ? '' : 'antippen zum Eintragen'].filter(Boolean).join(' · ');
+      html += known
+        ? item({ title: esc(pl.name), sub: esc(sub), n: money(pl.lastCents, cur) })
+        : item({ tag: 'button', cls: 'open', attrs: `data-act="new-position" data-account="${esc(a.id)}" data-isin="${esc(pl.isin || '')}" data-name="${esc(pl.name)}"`, title: esc(pl.name), sub: esc(sub), n: money(pl.lastCents, cur), chev: true });
+    }
+    html += '</ul>';
+  }
+  if (d) {
+    html += `<div class="note info"><span class="cap">kurse</span>Taler holt nichts aus dem Netz. Kurse trägst du ab und zu ein.${d.priceDate ? ` Die ältesten sind vom ${shortDate(d.priceDate)}` : ''}</div>
+    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse aktualisieren', sub: 'alle Positionen auf einer Seite', chev: true })}</ul>`;
+  }
+  return html;
+}
+
+/** Blatt „kurse“: ein Feld je Position, ein Datum für alle. */
+export function renderPrices(el, state, accountId, today) {
+  const list = state.positions.filter((p) => p.accountId === accountId);
+  el.innerHTML = `<form method="dialog" class="stack" id="prices-form">
+    <div class="sheethead"><h2 id="prices-title">kurse</h2></div>
+    <p class="muted small">Kurs je Stück in Euro, wie in der App deiner Bank. Leer lassen = bleibt wie bisher.</p>
+    ${list.map((p) => `<label class="field"><span class="cap">${esc(p.name.toLowerCase())}${p.priceCents !== null ? ` · bisher ${esc(money(p.priceCents))}` : ''}</span><input name="price-${esc(p.id)}" inputmode="decimal" placeholder="${p.priceCents !== null ? esc(amountInput(p.priceCents)) : '0,00'}" autocomplete="off"></label>`).join('')}
+    <label class="field"><span class="cap">vom</span><input name="date" type="date" value="${esc(today)}" required></label>
+    <div class="actions sticky"><button class="btn primary" value="save">speichern</button><button class="btn" value="cancel" formnovalidate>abbrechen</button></div>
   </form>`;
 }

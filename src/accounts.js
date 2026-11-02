@@ -1,8 +1,9 @@
 // Konten: welches Konto zu einer Buchung gehört, Kontostände, Vermögen, Geldfluss. Reine Logik, keine Uhr, kein DOM.
-import { kindOf, baseAmount, monthOf, previousMonth, detectRecurring, wordIn } from './logic.js';
+import { kindOf, baseAmount, monthOf, previousMonth, detectRecurring, wordIn, sortTransactions } from './logic.js';
 
 /** @typedef {import('./model.js').Account} Account */
 /** @typedef {import('./model.js').Transaction} Transaction */
+/** @typedef {import('./model.js').Position} Position */
 
 /** Konto, dessen Erkennungswort im Text steht. Das längste Wort gewinnt („ING Visa“ vor „ING“), bei Gleichstand das erste Konto. */
 function matchIn(text, accounts, exceptId = null) {
@@ -50,9 +51,14 @@ export const ownNames = (settings, accounts) => [...new Set([...settings.ownAcco
  * Stand eines Kontos heute: letzter bekannter Stand plus alles, was danach passiert ist.
  * Hat das Konto eigene Buchungen (Auszug, Apple Pay), zählen die; sonst die erkannten Umbuchungen dorthin (dann „geschätzt“).
  * Beispieldaten zählen nie, „nicht mitzählen“ schon (das Geld ist trotzdem geflossen).
- * @returns {{cents: number, date: string, source: 'manual'|'statement', since: number, estimated: boolean}|null}
+ * Ein Depot mit eingetragenen Positionen hat als Stand deren Wert (Quelle „positions“, Datum = ältester Kurs).
+ * @returns {{cents: number, date: string|null, source: 'manual'|'statement'|'positions', since: number, estimated: boolean, count?: number}|null}
  */
-export function balanceOf(a, transactions, accounts, currency = 'EUR') {
+export function balanceOf(a, transactions, accounts, currency = 'EUR', positions = []) {
+  if (a.type === 'depot') {
+    const d = depotValue(a, positions, transactions, accounts, currency);
+    if (d) return { cents: d.cents, date: d.priceDate, source: 'positions', since: 0, estimated: false, count: d.items.length };
+  }
   if (!a.balance) return null;
   const real = transactions.filter((t) => t.source !== 'demo');
   const own = real.filter((t) => accountFor(t, accounts)?.id === a.id);
@@ -86,14 +92,14 @@ export const monthlyInterest = (cents, rateBp) => (rateBp ? Math.round(cents * r
  * @returns {{totalCents: number, byType: {konto: number, tagesgeld: number, depot: number}, otherCents: number, missing: number,
  *   banks: {bank: string, cents: number, items: {account: Account, balance: ReturnType<typeof balanceOf>}[]}[]}}
  */
-export function wealth(accounts, transactions, currency = 'EUR') {
+export function wealth(accounts, transactions, currency = 'EUR', positions = []) {
   const byType = { konto: 0, tagesgeld: 0, depot: 0 };
   let totalCents = 0;
   let otherCents = 0;
   let missing = 0;
   const banks = [];
   for (const a of accounts) {
-    const balance = balanceOf(a, transactions, accounts, currency);
+    const balance = balanceOf(a, transactions, accounts, currency, positions);
     let g = banks.find((b) => b.bank === a.bank);
     if (!g) { g = { bank: a.bank, cents: 0, items: [] }; banks.push(g); }
     g.items.push({ account: a, balance });
@@ -198,4 +204,101 @@ export function migrateOwnAccounts(ownAccounts, newId) {
   }
   // Das Eingangskonto zuerst: Banken erscheinen in der Reihenfolge ihrer Konten.
   return { accounts: accounts.sort((x, y) => Number(y.main) - Number(x.main)), ownAccounts: rest };
+}
+
+// ---------- Depots ----------
+
+const ISIN_RE = /\b([A-Z]{2}[A-Z0-9]{9}\d)\b/;
+/** ISIN im Text einer Buchung („Savings plan execution IE00B4L5Y983 …“), sonst null. */
+export const isinIn = (text) => String(text || '').toUpperCase().match(ISIN_RE)?.[1] || null;
+
+/** Stück aus dem Text einer Sparplan-Zeile („quantity: 0.5“, „Stück 0,621“), in Millionstel; sonst null. */
+export function quantityIn(text) {
+  const m = String(text || '').match(/(?:quantity|stück|stk\.?)\s*:?\s*(\d[\d.,]*)/i);
+  if (!m) return null;
+  let v = m[1].replace(/[.,]$/, '');
+  v = v.includes(',') && v.includes('.') ? v.replace(/\./g, '').replace(',', '.') : v.replace(',', '.');
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1e6) : null;
+}
+
+/** Name eines Wertpapiers aus einer Sparplan-Zeile: ohne „Savings plan execution“, ISIN und Stückzahl. */
+export function planName(text) {
+  return String(text || '')
+    .replace(/savings plan execution|sparplan(?:ausführung)?|ausführung/gi, '')
+    .replace(new RegExp(ISIN_RE.source, 'gi'), '')
+    .replace(/,?\s*(?:quantity|stück|stk\.?)\s*:?.*$/i, '')
+    .replace(/\s+/g, ' ').replace(/^[\s\-–,]+|[\s\-–,]+$/g, '');
+}
+
+/** Sparplan-Ausführungen einer Position nach ihrem Stichtag: Sparen mit derselben ISIN, ins selbe Depot (oder ohne erkanntes Ziel). */
+export function planBuys(p, transactions, accounts) {
+  if (!p.plan || !p.isin) return [];
+  return transactions.filter((t) => {
+    if (t.source === 'demo' || kindOf(t) !== 'saving' || t.amountCents <= 0 || t.date <= p.date || isinIn(t.merchant) !== p.isin) return false;
+    const c = counterFor(t, accounts);
+    return !c || c.id === p.accountId;
+  });
+}
+
+/**
+ * Stand einer Position: eingetragene Stück und Kaufwert plus Sparplan-Ausführungen danach. Wert = Stück × Kurs.
+ * @returns {{unitsMicro: number, costCents: number, valueCents: number|null, gainCents: number|null, buys: number, missingUnits: number}}
+ *   missingUnits = Ausführungen ohne Stückzahl im Text (dann fehlen Stück, der Kaufwert stimmt trotzdem)
+ */
+export function positionValue(p, transactions, accounts, currency = 'EUR') {
+  const buys = planBuys(p, transactions, accounts);
+  let unitsMicro = p.unitsMicro;
+  let costCents = p.costCents;
+  let missingUnits = 0;
+  for (const t of buys) {
+    const v = baseAmount(t, currency);
+    if (v !== null) costCents += v;
+    const q = quantityIn(t.merchant);
+    if (q) unitsMicro += q; else missingUnits += 1;
+  }
+  const valueCents = p.priceCents === null ? null : Math.round(unitsMicro * p.priceCents / 1e6);
+  return { unitsMicro, costCents, valueCents, gainCents: valueCents === null ? null : valueCents - costCents, buys: buys.length, missingUnits };
+}
+
+/**
+ * Wert eines Depots aus seinen Positionen. Eine Position ohne Kurs zählt mit ihrem Kaufwert.
+ * @returns {{cents: number, costCents: number, gainCents: number, priceDate: string|null, noPrice: number,
+ *   items: {position: Position, value: ReturnType<typeof positionValue>}[]}|null}  null = keine Positionen
+ */
+export function depotValue(a, positions, transactions, accounts, currency = 'EUR') {
+  const list = positions.filter((p) => p.accountId === a.id);
+  if (!list.length) return null;
+  let cents = 0;
+  let costCents = 0;
+  let priceDate = null;
+  let noPrice = 0;
+  const items = list.map((position) => ({ position, value: positionValue(position, transactions, accounts, currency) }));
+  for (const { position, value } of items) {
+    cents += value.valueCents ?? value.costCents;
+    costCents += value.costCents;
+    if (position.priceDate) priceDate = !priceDate || position.priceDate < priceDate ? position.priceDate : priceDate;
+    else noPrice += 1;
+  }
+  items.sort((x, y) => (y.value.valueCents ?? y.value.costCents) - (x.value.valueCents ?? x.value.costCents));
+  return { cents, costCents, gainCents: cents - costCents, priceDate, noPrice, items };
+}
+
+/**
+ * Sparpläne, die in ein Depot gehen, aus den Kontoauszügen: je ISIN (sonst je Text) der letzte Betrag und die letzte Stückzahl.
+ * @returns {{key: string, isin: string|null, name: string, lastCents: number, lastDate: string, lastUnitsMicro: number|null, count: number}[]}
+ */
+export function depotPlans(a, transactions, accounts) {
+  const map = new Map();
+  for (const t of sortTransactions(transactions).reverse()) {
+    if (t.source === 'demo' || kindOf(t) !== 'saving' || t.amountCents <= 0 || counterFor(t, accounts)?.id !== a.id) continue;
+    const isin = isinIn(t.merchant);
+    const key = isin || planName(t.merchant).toLowerCase();
+    const prev = map.get(key);
+    map.set(key, {
+      key, isin, name: planName(t.merchant) || prev?.name || isin || t.merchant, lastCents: t.amountCents, lastDate: t.date,
+      lastUnitsMicro: quantityIn(t.merchant) ?? prev?.lastUnitsMicro ?? null, count: (prev?.count || 0) + 1,
+    });
+  }
+  return [...map.values()].sort((x, y) => y.lastCents - x.lastCents);
 }
