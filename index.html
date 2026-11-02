@@ -43,6 +43,7 @@
     <section id="view-list" hidden></section>
     <section id="view-settings" hidden></section>
     <section id="view-rules" hidden></section>
+    <section id="view-categories" hidden></section>
   </main>
 
   <nav class="tabbar" aria-label="Bereiche"><div class="wrap">
@@ -107,6 +108,31 @@
     <label class="field"><span class="cap">kategorie</span><select name="categoryId"></select></label>
     <p class="muted small">Das Muster muss am Wortanfang im Händlernamen stehen. Längere Muster gewinnen, von Hand gesetzte Kategorien bleiben.</p>
     <button class="textbtn danger deletebtn" value="delete" id="rule-delete" formnovalidate>regel löschen</button>
+    <div class="actions sticky">
+      <button class="btn primary" value="save">speichern</button>
+      <button class="btn" value="cancel" formnovalidate>abbrechen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="sheet" id="cat-dialog" aria-labelledby="cat-title">
+  <form method="dialog" id="cat-form" class="stack">
+    <div class="sheethead">
+      <h2 id="cat-title">kategorie</h2>
+    </div>
+    <label class="field"><span class="cap">name</span><input name="name" required maxlength="40" placeholder="z. B. Dienstwagen" autocomplete="off"></label>
+    <div class="field"><span class="cap">art</span>
+      <div class="seg full" id="cat-kind" role="group" aria-label="Art der Kategorie">
+        <button type="button" data-ckind="expense">ausgabe</button><button type="button" data-ckind="income">einnahme</button><button type="button" data-ckind="balance">gleicht sich aus</button><button type="button" data-ckind="saving">sparen</button>
+      </div>
+    </div>
+    <p class="muted small" id="cat-kind-hint"></p>
+    <label class="check"><input type="checkbox" name="hidden"> beim Einordnen ausblenden</label>
+    <div class="field" id="cat-merge"><span class="cap">zusammenlegen mit</span>
+      <div class="inlineform"><select name="mergeTo"></select><button class="btn" value="merge" formnovalidate>zusammenlegen</button></div>
+    </div>
+    <p class="err-text" id="cat-error" role="alert" hidden></p>
+    <button class="textbtn danger deletebtn" value="delete" id="cat-delete" formnovalidate>kategorie löschen</button>
     <div class="actions sticky">
       <button class="btn primary" value="save">speichern</button>
       <button class="btn" value="cancel" formnovalidate>abbrechen</button>

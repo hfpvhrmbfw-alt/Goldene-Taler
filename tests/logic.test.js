@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as L from '../src/logic.js';
 import * as M from '../src/model.js';
-import { DEFAULT_RULES } from '../src/catalog.js';
+import { DEFAULT_RULES, DEFAULT_CATEGORIES } from '../src/catalog.js';
 
 const fx = (n) => readFileSync(new URL(`./fixtures/${n}`, import.meta.url), 'utf8');
 
@@ -117,9 +117,13 @@ test('monthSummary: Vormonat bis zum gleichen Tag, Fremdwährung', () => {
 
 test('categoriesByUse und editRule', () => {
   const t = [{ categoryId: 'reisen' }, { categoryId: 'reisen' }, { categoryId: 'abos' }, { categoryId: null }];
-  const order = L.categoriesByUse(t);
+  const order = L.categoriesByUse(t, DEFAULT_CATEGORIES, ['expense']);
   assert.deepEqual(order.slice(0, 3), ['reisen', 'abos', 'lebensmittel']);
   assert.equal(order.length, M.CATEGORY_IDS.length);
+  // Ausgeblendete und Kategorien anderer Art fehlen; Einnahmen-Knöpfe kommen aus den Einnahmen-Kategorien.
+  const hidden = DEFAULT_CATEGORIES.map((c) => (c.id === 'reisen' ? { ...c, hidden: true } : c));
+  assert.ok(!L.categoriesByUse(t, hidden, ['expense']).includes('reisen'));
+  assert.deepEqual(L.categoriesByUse([], DEFAULT_CATEGORIES, ['income']), ['gehalt', 'erstattung', 'sonstige-einnahmen']);
   const rules = [{ id: 'u-1', pattern: 'rewe', categoryId: 'lebensmittel' }, { id: 'u-2', pattern: 'rewe to go', categoryId: 'essen' }];
   const r = L.editRule(rules, 'u-2', 'REWE', 'essen');
   assert.deepEqual(r, [{ id: 'u-2', pattern: 'rewe', categoryId: 'essen' }]);
@@ -385,14 +389,99 @@ test('Mehr ausgegeben als eingenommen: Bilanz ist negativ', () => {
   assert.equal(s.balanceCents, -30000);
 });
 
-test('needsCategory: nur mitzählende Ausgaben ohne Kategorie; Regeln fassen andere Arten nicht an', () => {
+test('needsCategory: mitzählende Ausgaben und Einnahmen ohne Kategorie', () => {
   assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'expense')), true);
   assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'expense', { excluded: true })), false);
-  assert.equal(L.needsCategory(mk('a', '2026-11-01', -100, 'income')), false);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', -100, 'income')), true);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', -100, 'income', { categoryId: 'gehalt' })), false);
   assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'saving')), false);
-  const rewe = (kind, cents) => mk('REWE Markt', '2026-11-01', cents, kind);
-  const out = L.applyRules([rewe('expense', 100), rewe('income', -100)], [{ id: 'r', pattern: 'rewe', categoryId: 'lebensmittel' }]);
-  assert.deepEqual(out.map((t) => t.categoryId), ['lebensmittel', null]);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'transfer')), false);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'balance')), false);
+});
+
+const CATS = [...DEFAULT_CATEGORIES, { id: 'c-dw', name: 'Dienstwagen', kind: 'balance', hidden: false }];
+
+test('applyRules: Kategorie bestimmt die Art, unpassende Arten bleiben ohne Kategorie', () => {
+  const rules = [
+    { id: '1', pattern: 'rewe', categoryId: 'lebensmittel' }, { id: '2', pattern: 'aral', categoryId: 'c-dw' },
+    { id: '3', pattern: 'abrechnung', categoryId: 'c-dw' }, { id: '4', pattern: 'arbeitgeber', categoryId: 'gehalt' },
+    { id: '5', pattern: 'tagesgeld', categoryId: 'sparen' },
+  ];
+  const out = L.applyRules([
+    mk('REWE Markt', '2026-11-01', 100, 'expense'), mk('REWE Markt', '2026-11-01', -100, 'income'),
+    mk('Aral', '2026-11-01', 5000, 'expense'), mk('Abrechnung Firma', '2026-11-01', -5000, 'income'),
+    mk('Arbeitgeber GmbH', '2026-11-01', -200000, 'income'), mk('Arbeitgeber Prämie', '2026-11-01', 100, 'expense'),
+    mk('Tagesgeld Dauerauftrag', '2026-11-01', 40000, 'expense'), mk('ETF Sparplan', '2026-11-01', 5000, 'saving'),
+  ], rules, CATS);
+  assert.deepEqual(out.map((t) => [t.categoryId, t.kind]), [
+    ['lebensmittel', 'expense'], [null, 'income'], ['c-dw', 'balance'], ['c-dw', 'balance'],
+    ['gehalt', 'income'], [null, 'expense'], ['sparen', 'saving'], [null, 'saving'],
+  ]);
+});
+
+test('applyRules: Regel weg → Ausgleich und Sparen fallen auf Ausgabe/Einnahme zurück; Handarbeit und gleiche Objekte bleiben', () => {
+  const before = L.applyRules([mk('Aral', '2026-11-01', 5000, 'expense'), mk('Abrechnung', '2026-11-01', -5000, 'income')],
+    [{ id: '2', pattern: 'aral', categoryId: 'c-dw' }, { id: '3', pattern: 'abrechnung', categoryId: 'c-dw' }], CATS);
+  const after = L.applyRules(before, [], CATS);
+  assert.deepEqual(after.map((t) => [t.categoryId, t.kind]), [[null, 'expense'], [null, 'income']]);
+  const hand = mk('Aral', '2026-11-01', 5000, 'balance', { categoryId: 'c-dw', manualCategory: true });
+  assert.equal(L.applyRules([hand], [], CATS)[0], hand);
+  const same = L.applyRules([mk('x', '2026-11-01', 5, 'expense')], [], CATS);
+  assert.equal(L.applyRules(same, [], CATS)[0], same[0]);
+});
+
+test('monthSummary: „gleicht sich aus“ zählt nirgends, zeigt aber den offenen Rest', () => {
+  const list = [
+    mk('Aral', '2026-11-03', 6000, 'balance', { categoryId: 'c-dw' }), mk('Shell', '2026-11-10', 4000, 'balance', { categoryId: 'c-dw' }),
+    mk('Abrechnung', '2026-11-28', -7000, 'balance', { categoryId: 'c-dw' }), mk('rewe', '2026-11-04', 1000, 'expense'),
+    mk('Gehalt', '2026-11-03', -200000, 'income'),
+  ];
+  const s = L.monthSummary(list, '2026-11', '2026-11-30');
+  assert.equal(s.spentCents, 1000);
+  assert.equal(s.incomeCents, 200000);
+  assert.deepEqual(s.settling, [{ categoryId: 'c-dw', outCents: 10000, inCents: 7000, openCents: 3000, count: 3 }]);
+  assert.deepEqual(L.monthSummary(list.slice(0, 2).concat(list.slice(2, 3)), '2026-11', '2026-11-30').settling[0].openCents, 3000);
+});
+
+test('budgetFor: automatisch = Einnahmen − Sparen, sonst Vormonat; fest; aus', () => {
+  const list = [
+    mk('g1', '2026-10-03', -240000, 'income'), mk('s1', '2026-10-05', 70000, 'saving'),
+    mk('g2', '2026-11-03', -250000, 'income'), mk('s2', '2026-11-05', 80000, 'saving'),
+  ];
+  const auto = { budgetMode: 'auto', monthlyBudgetCents: null };
+  assert.deepEqual(L.budgetFor(list, auto, '2026-11'), { cents: 170000, auto: true, month: '2026-11', incomeCents: 250000, savingCents: 80000 });
+  // Dezember ohne Einnahmen: Rechnung aus November.
+  assert.equal(L.budgetFor(list, auto, '2026-12').month, '2026-11');
+  assert.equal(L.budgetFor(list, auto, '2027-01'), null);
+  assert.equal(L.budgetFor([], auto, '2026-11'), null);
+  assert.equal(L.budgetFor(list, { budgetMode: 'fixed', monthlyBudgetCents: 90000 }, '2026-11').cents, 90000);
+  assert.equal(L.budgetFor(list, { budgetMode: 'off', monthlyBudgetCents: 90000 }, '2026-11'), null);
+  // Sparen über Einnahmen: kein sinnvolles Budget.
+  assert.equal(L.budgetFor([mk('g', '2026-11-03', -1000, 'income'), mk('s', '2026-11-03', 5000, 'saving')], auto, '2026-11'), null);
+});
+
+test('mergeCategory: Buchungen und Regeln wandern mit', () => {
+  const r = L.mergeCategory([mk('a', '2026-11-01', 1, 'expense', { categoryId: 'essen' }), mk('b', '2026-11-01', 1, 'expense', { categoryId: 'abos' })],
+    [{ id: 'x', pattern: 'p', categoryId: 'essen' }], 'essen', 'freizeit');
+  assert.deepEqual(r.transactions.map((t) => t.categoryId), ['freizeit', 'abos']);
+  assert.equal(r.rules[0].categoryId, 'freizeit');
+});
+
+test('Kategorien und Einstellungen: bereinigt, Sicherung mit und ohne Kategorienliste', () => {
+  assert.deepEqual(M.sanitizeCategories([{ id: 'a', name: ' Haustier ', kind: 'income', hidden: true }, { id: 'a', name: 'doppelt' }, { id: '', name: 'x' }, null]),
+    [{ id: 'a', name: 'Haustier', kind: 'income', hidden: true }]);
+  assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'quatsch' }).kind, 'expense');
+  assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: 5, categoryId: 'c-1' }).categoryId, 'c-1');
+  assert.equal(M.sanitizeRule({ id: 'r', pattern: 'A', categoryId: 'c-1' }).categoryId, 'c-1');
+  assert.equal(M.sanitizeSettings({}).budgetMode, 'auto');
+  assert.equal(M.sanitizeSettings({ monthlyBudgetCents: 5000 }).budgetMode, 'fixed');
+  assert.equal(M.sanitizeSettings({ budgetMode: 'fixed' }).budgetMode, 'auto');
+  assert.equal(M.sanitizeSettings({ budgetMode: 'off', monthlyBudgetCents: 5000 }).budgetMode, 'off');
+  const state = { transactions: [], rules: [], settings: M.sanitizeSettings({}), deletedIds: [], categories: CATS };
+  const back = M.parseImport(JSON.stringify(M.buildExport(state, '2026-11-01T00:00:00Z')));
+  assert.equal(back.categories.length, CATS.length);
+  const old = M.parseImport(JSON.stringify({ app: 'taler', version: 1, transactions: [] }));
+  assert.equal(old.categories, null);
 });
 
 test('findCrossDuplicates: Einnahmen und Umbuchungen aus dem Auszug sind keine Apple-Pay-Dubletten', () => {

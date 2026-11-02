@@ -180,9 +180,30 @@ export function categorize(merchant, rules) {
   return null;
 }
 
-/** Wendet Regeln auf alle Buchungen an, deren Kategorie nicht von Hand gesetzt wurde. */
-export function applyRules(transactions, rules) {
-  return transactions.map((t) => (t.manualCategory || kindOf(t) !== 'expense' ? t : { ...t, categoryId: categorize(t.merchant, rules) }));
+/** Welche Buchungsart (ohne Kategorie) zu welcher Kategorieart passt. */
+const FITS = { expense: ['expense'], income: ['income'], balance: ['expense', 'income'], saving: ['expense'] };
+
+/**
+ * Wendet die Regeln an: setzt Kategorie und damit die Art der Buchung (Kategorie „gleicht sich aus“ macht aus Ausgabe und
+ * Einnahme eine Ausgleichsbuchung, Kategorie „Sparen“ ein Sparen). Von Hand gesetzte Kategorien bleiben, ebenso Umbuchungen und
+ * Sparen ohne Kategorie (z. B. Sparplan aus dem Auszug). Passt die Art nicht zur Kategorie (Ausgabe in „Gehalt“), gilt die Regel nicht.
+ * Ohne Treffer fällt eine zuvor durch Regel gesetzte Art zurück auf Einnahme (Betrag negativ) oder Ausgabe.
+ * Gibt dasselbe Objekt zurück, wo sich nichts ändert.
+ * @param {import('./model.js').Transaction[]} transactions
+ * @param {import('./model.js').Rule[]} rules
+ * @param {import('./model.js').Category[]} categories
+ */
+export function applyRules(transactions, rules, categories = []) {
+  return transactions.map((t) => {
+    const k = kindOf(t);
+    if (t.manualCategory || k === 'transfer' || (k === 'saving' && !t.categoryId)) return t;
+    const base = k === 'balance' || k === 'saving' ? (t.amountCents < 0 ? 'income' : 'expense') : k;
+    const id = categorize(t.merchant, rules);
+    const ck = id ? categoryKind(categories, id) : null;
+    const fits = ck && FITS[ck].includes(base);
+    const next = fits ? { categoryId: id, kind: ck } : { categoryId: null, kind: base };
+    return next.categoryId === t.categoryId && next.kind === k ? t : { ...t, ...next };
+  });
 }
 
 /**
@@ -211,8 +232,11 @@ export const kindOf = (t) => t.kind || 'expense';
 /** Zählt eine Buchung bei den Ausgaben mit? Von Hand ausgenommene (z. B. für andere ausgelegt) nicht, Einnahmen, Sparen und Umbuchungen auch nicht. */
 export const counts = (t) => !t.excluded && kindOf(t) === 'expense';
 
-/** Braucht die Buchung eine Kategorie? Nur Ausgaben, die mitzählen. */
-export const needsCategory = (t) => counts(t) && !t.categoryId;
+/** Braucht die Buchung eine Kategorie? Ausgaben und Einnahmen, die mitzählen und noch keine haben. */
+export const needsCategory = (t) => !t.excluded && !t.categoryId && (kindOf(t) === 'expense' || kindOf(t) === 'income');
+
+/** Art einer Kategorie nach ID; unbekannte IDs gelten als Ausgabe. */
+export const categoryKind = (categories, id) => categories.find((c) => c.id === id)?.kind ?? 'expense';
 
 /** Summe in der Hauptwährung für Buchungen einer Art, ohne ausgenommene. Geld, das reinkam, steht positiv (Einnahmen). */
 function kindTotal(list, kind, currency) {
@@ -293,6 +317,8 @@ export function daysInMonth(month) {
  * @property {number} incomeCents      Einnahmen des Monats (positiv)
  * @property {number} savingCents      Sparpläne des Monats
  * @property {number} balanceCents     Einnahmen − Ausgaben − Sparen
+ * @property {{categoryId: string|null, outCents: number, inCents: number, openCents: number, count: number}[]} settling
+ *   Kategorien „gleicht sich aus“ im Monat: raus, rein und was noch offen ist (raus − rein)
  * @property {number} dailyAverageCents bezogen auf vergangene Tage (laufender Monat) bzw. alle Tage
  * @property {{categoryId: string|null, cents: number, count: number, share: number}[]} byCategory  größte zuerst
  * @property {{merchant: string, cents: number, count: number}[]} topMerchants  max. 5
@@ -321,6 +347,16 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
   const monthAll = transactions.filter((t) => monthOf(t.date) === month);
   const incomeCents = kindTotal(monthAll, 'income', currency).cents;
   const savingCents = kindTotal(monthAll, 'saving', currency).cents;
+  const settle = new Map();
+  for (const t of monthAll) {
+    const v = kindOf(t) === 'balance' && !t.excluded ? baseAmount(t, currency) : null;
+    if (v === null) continue;
+    const e = settle.get(t.categoryId) || { categoryId: t.categoryId, outCents: 0, inCents: 0, openCents: 0, count: 0 };
+    if (v > 0) e.outCents += v; else e.inCents -= v;
+    e.openCents = e.outCents - e.inCents;
+    e.count += 1;
+    settle.set(t.categoryId, e);
+  }
 
   const order = [...CATEGORY_IDS, null];
   const byCat = new Map();
@@ -360,6 +396,7 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
     previousToDateCents,
     monthProgress: elapsed / total,
     foreign,
+    settling: [...settle.values()],
     incomeCents,
     savingCents,
     balanceCents: incomeCents - spentCents - savingCents,
@@ -369,6 +406,25 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
     byCategory,
     topMerchants,
   };
+}
+
+/**
+ * Monatsbudget. „auto“ = Einnahmen minus Sparpläne des Monats aus den Kontoauszügen; sind im Monat noch keine Einnahmen da,
+ * gilt der Vormonat. „fixed“ = der eingetragene Betrag, „off“ = keins.
+ * @returns {{cents: number, auto: boolean, month: string, incomeCents?: number, savingCents?: number}|null}
+ */
+export function budgetFor(transactions, settings, month, currency = 'EUR') {
+  if (settings.budgetMode === 'off') return null;
+  if (settings.budgetMode === 'fixed') return settings.monthlyBudgetCents ? { cents: settings.monthlyBudgetCents, auto: false, month } : null;
+  for (const m of [month, previousMonth(month)]) {
+    const inM = transactions.filter((t) => monthOf(t.date) === m);
+    const incomeCents = kindTotal(inM, 'income', currency).cents;
+    if (incomeCents <= 0) continue;
+    const savingCents = kindTotal(inM, 'saving', currency).cents;
+    const cents = incomeCents - savingCents;
+    return cents > 0 ? { cents, auto: true, month: m, incomeCents, savingCents } : null;
+  }
+  return null;
 }
 
 /**
@@ -478,13 +534,25 @@ export function upsertRule(rules, pattern, categoryId, newId) {
 }
 
 /**
- * Kategorien nach Häufigkeit, für die Auswahl beim Einordnen: oft genutzte zuerst, sonst feste Reihenfolge.
+ * Kategorien für die Knöpfe beim Einordnen: nur sichtbare der gewünschten Arten, oft genutzte zuerst, sonst Listenreihenfolge.
+ * @param {import('./model.js').Transaction[]} transactions
+ * @param {import('./model.js').Category[]} categories
+ * @param {string[]} kinds  erlaubte Arten
  * @returns {string[]}
  */
-export function categoriesByUse(transactions) {
+export function categoriesByUse(transactions, categories, kinds) {
   const n = new Map();
   for (const t of transactions) if (t.categoryId) n.set(t.categoryId, (n.get(t.categoryId) || 0) + 1);
-  return [...CATEGORY_IDS].sort((a, b) => (n.get(b) || 0) - (n.get(a) || 0) || CATEGORY_IDS.indexOf(a) - CATEGORY_IDS.indexOf(b));
+  const list = categories.filter((c) => !c.hidden && kinds.includes(c.kind));
+  return list.map((c, i) => ({ id: c.id, i })).sort((a, b) => (n.get(b.id) || 0) - (n.get(a.id) || 0) || a.i - b.i).map((c) => c.id);
+}
+
+/** Kategorie `from` in `to` aufgehen lassen: Buchungen und Regeln wandern mit. `to` muss dieselbe Art haben (prüft der Aufrufer). */
+export function mergeCategory(transactions, rules, from, to) {
+  return {
+    transactions: transactions.map((t) => (t.categoryId === from ? { ...t, categoryId: to } : t)),
+    rules: rules.map((r) => (r.categoryId === from ? { ...r, categoryId: to } : r)),
+  };
 }
 
 /** Ändert Muster oder Kategorie einer Regel. Hat eine andere Regel schon dieses Muster, ersetzt die geänderte sie. */

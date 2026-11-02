@@ -469,3 +469,13 @@ details.fold > .list { border-top:0; }
 .pill.on, .pill[aria-pressed="true"] { background:var(--accent-tint); border-color:var(--accent); color:var(--accent-text); }
 .chipset { display:flex; flex-wrap:wrap; gap:var(--s2); margin:var(--s2) 0 var(--s3); }
 #kind-seg { margin-bottom:var(--s3); }
+
+/* Kategorien, automatisches Budget */
+.tagmini { display:inline-block; margin-left:var(--s2); padding:1px 6px; border:1px solid var(--line); border-radius:calc(var(--r-control) / 2); color:var(--muted); font:500 calc(11*var(--u))/1.4 var(--font-body); vertical-align:middle; }
+.addtext { color:var(--accent-text); }
+.catbtn.add { border-style:dashed; color:var(--accent-text); }
+.suggest { margin:var(--s3) 0 var(--s2); padding:var(--s3); border:1px solid var(--line); border-radius:var(--r-card); background:var(--surface); }
+.suggest > b { display:block; font:600 calc(28*var(--u))/1.2 var(--font-body); margin:2px 0 var(--s1); font-variant-numeric:tabular-nums; }
+.settlehead { padding:var(--s3) var(--s1) var(--s1); color:var(--muted); list-style:none; }
+.item .n.open { color:var(--warn); }
+#cat-kind button:disabled { opacity:.45; cursor:default; }

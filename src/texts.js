@@ -1,19 +1,9 @@
 // Beschriftungen zu den IDs aus dem Modell und Meldungen. Gehört zur Oberfläche.
 
-export const CATEGORY_LABELS = {
-  lebensmittel: 'Lebensmittel',
-  essen: 'Essen & Café',
-  mobilitaet: 'Mobilität',
-  shopping: 'Shopping',
-  drogerie: 'Drogerie',
-  haushalt: 'Haushalt & Wohnen',
-  gesundheit: 'Gesundheit',
-  freizeit: 'Freizeit',
-  abos: 'Abos & Digitales',
-  reisen: 'Reisen',
-  sonstiges: 'Sonstiges',
-};
 export const KIND_LABELS = { expense: 'Ausgabe', income: 'Einnahme', saving: 'Sparen', transfer: 'Umbuchung' };
+/** Überschriften der Kategoriengruppen und Namen der Arten (Umschalter). */
+export const CATEGORY_GROUPS = { expense: 'Ausgaben', income: 'Einnahmen', balance: 'Gleicht sich aus', saving: 'Sparen' };
+export const CATEGORY_KIND_NAMES = { expense: 'ausgabe', income: 'einnahme', balance: 'gleicht sich aus', saving: 'sparen' };
 export const UNCATEGORIZED = 'Ohne Kategorie';
 
 export const LOG_ERRORS = {
