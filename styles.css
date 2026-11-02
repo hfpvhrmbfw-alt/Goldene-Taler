@@ -415,7 +415,7 @@ label.item { cursor:pointer; }
 /* Löschen am Ende des Sheets, weg von „speichern“. */
 .deletebtn { display:block; padding:0; margin:var(--s2) 0 0; text-align:left; }
 .deletebtn[hidden] { display:none; }
-#base-field[hidden] { display:none; }
+.field[hidden] { display:none; }
 .toast button { min-height:var(--tap); }
 
 /* Klappbare Abschnitte der Übersicht (Kategorien) */
@@ -452,3 +452,20 @@ details.fold > .list { border-top:0; }
 .tabbar a { position:relative; }
 .tabbar a.due svg { overflow:visible; }
 .tabbar a.due::before { content:""; position:absolute; top:8px; left:calc(50% + 8px); width:8px; height:8px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 2px var(--bg); }
+
+/* Bilanz, Art-Umschalter, Sortierung und Filter */
+.saldo { margin:var(--s2) 0 var(--s3); }
+.saldo .kpis { margin-top:var(--s3); }
+.kpi .v.pos { color:var(--ok); }
+.kpi .v.neg { color:var(--err); }
+.split { display:flex; height:10px; border-radius:var(--r-control-s); overflow:hidden; background:var(--sunken); margin:var(--s2) 0 var(--s1); }
+.split .out { background:var(--ink); }
+.split .left { background:var(--ok); }
+.split .over { background:var(--err); }
+.seg.full { display:flex; }
+.seg.full button { flex:1; padding:0 var(--s2); }
+.toolrow { display:flex; flex-wrap:wrap; gap:var(--s2); margin:var(--s2) 0; }
+.pill { display:inline-flex; align-items:center; gap:6px; font:500 calc(14*var(--u)) var(--font-body); background:var(--surface); border:1px solid var(--line); color:var(--ink); border-radius:999px; padding:0 14px; min-height:var(--tap); cursor:pointer; }
+.pill.on, .pill[aria-pressed="true"] { background:var(--accent-tint); border-color:var(--accent); color:var(--accent-text); }
+.chipset { display:flex; flex-wrap:wrap; gap:var(--s2); margin:var(--s2) 0 var(--s3); }
+#kind-seg { margin-bottom:var(--s3); }

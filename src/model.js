@@ -14,11 +14,18 @@ export const CATEGORY_IDS = [
 export const SOURCES = ['shortcut', 'manual', 'demo', 'statement'];
 
 /**
+ * Art einer Buchung. expense = Ausgabe (oder Erstattung, dann negativ), income = Einnahme (Betrag negativ),
+ * saving = Sparplan (zählt nicht als Ausgabe), transfer = Umbuchung zwischen eigenen Konten (zählt nirgends).
+ */
+export const KINDS = ['expense', 'income', 'saving', 'transfer'];
+
+/**
  * @typedef {Object} Transaction
  * @property {string} id
  * @property {string} date          YYYY-MM-DD (lokales Datum der Zahlung)
  * @property {string|null} time     HH:MM oder null
- * @property {number} amountCents   ganze Cent, positiv = Ausgabe, negativ = Erstattung
+ * @property {number} amountCents   ganze Cent, positiv = Geld ging raus, negativ = Geld kam rein (Erstattung, Einnahme)
+ * @property {'expense'|'income'|'saving'|'transfer'} kind
  * @property {string} currency      ISO 4217, z. B. EUR
  * @property {number|null} baseCents  bei Fremdwährung: abgerechneter Betrag in der Hauptwährung (sonst null)
  * @property {string} merchant
@@ -53,7 +60,7 @@ const TIME_RE = /^\d{2}:\d{2}$/;
 export function emptyTransaction(id, date) {
   return {
     id, date, time: null, amountCents: 0, currency: 'EUR', baseCents: null, merchant: '', card: '',
-    categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false,
+    categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false, kind: 'expense',
   };
 }
 
@@ -81,6 +88,7 @@ export function sanitizeTransaction(raw) {
     note: str(raw.note, 500),
     source: SOURCES.includes(raw.source) ? raw.source : 'manual',
     excluded: raw.excluded === true,
+    kind: KINDS.includes(raw.kind) ? raw.kind : 'expense',
   };
 }
 

@@ -346,3 +346,97 @@ test('monthCurve', () => {
   assert.equal(L.monthCurve(t, '2026-09', '2026-10-06').current.length, 30);
   assert.deepEqual(L.monthCurve(t, '2026-11', '2026-10-06').current, []);
 });
+
+// ---------- Arten: Ausgabe, Einnahme, Sparen, Umbuchung ----------
+const mk = (id, date, cents, kind, extra = {}) =>
+  M.sanitizeTransaction({ id, date, amountCents: cents, merchant: id, currency: 'EUR', source: 'statement', kind, ...extra });
+
+test('Art: unbekannt oder fehlend ist Ausgabe, Sicherungen ohne Art bleiben gültig', () => {
+  assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: 5 }).kind, 'expense');
+  assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: 5, kind: 'quatsch' }).kind, 'expense');
+  assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: -5, kind: 'income' }).kind, 'income');
+  assert.equal(L.kindOf({}), 'expense');
+});
+
+test('monthSummary: Einnahmen und Sparen zählen nicht als Ausgabe, Bilanz = Einnahmen − Ausgaben − Sparen', () => {
+  const list = [
+    mk('gehalt', '2026-11-03', -250000, 'income'),
+    mk('rewe', '2026-11-04', 12000, 'expense'),
+    mk('erstattung', '2026-11-05', -2000, 'expense'),
+    mk('etf', '2026-11-06', 50000, 'saving'),
+    mk('umbuchung', '2026-11-06', 100000, 'transfer'),
+    mk('ausgenommen', '2026-11-07', -80000, 'income', { excluded: true }),
+    mk('okt', '2026-10-31', 99999, 'expense'),
+  ];
+  const s = L.monthSummary(list, '2026-11', '2026-11-20');
+  assert.equal(s.spentCents, 10000);
+  assert.equal(s.count, 2);
+  assert.equal(s.incomeCents, 250000);
+  assert.equal(s.savingCents, 50000);
+  assert.equal(s.balanceCents, 250000 - 10000 - 50000);
+  // Kategorien und Händler kennen nur Ausgaben.
+  assert.deepEqual(s.byCategory.map((c) => c.cents), [10000]);
+  assert.deepEqual(s.topMerchants.map((m) => m.merchant), ['rewe', 'erstattung']);
+  assert.equal(L.monthSummary(list, '2026-11', '2026-11-20', 100000).budgetLeftCents, 90000);
+});
+
+test('Mehr ausgegeben als eingenommen: Bilanz ist negativ', () => {
+  const s = L.monthSummary([mk('g', '2026-11-03', -100000, 'income'), mk('m', '2026-11-04', 130000, 'expense')], '2026-11', '2026-11-20');
+  assert.equal(s.balanceCents, -30000);
+});
+
+test('needsCategory: nur mitzählende Ausgaben ohne Kategorie; Regeln fassen andere Arten nicht an', () => {
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'expense')), true);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'expense', { excluded: true })), false);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', -100, 'income')), false);
+  assert.equal(L.needsCategory(mk('a', '2026-11-01', 100, 'saving')), false);
+  const rewe = (kind, cents) => mk('REWE Markt', '2026-11-01', cents, kind);
+  const out = L.applyRules([rewe('expense', 100), rewe('income', -100)], [{ id: 'r', pattern: 'rewe', categoryId: 'lebensmittel' }]);
+  assert.deepEqual(out.map((t) => t.categoryId), ['lebensmittel', null]);
+});
+
+test('findCrossDuplicates: Einnahmen und Umbuchungen aus dem Auszug sind keine Apple-Pay-Dubletten', () => {
+  const pay = mk('sc-1', '2026-11-01', 1000, 'expense', { source: 'shortcut' });
+  const incomeRow = mk('st-1', '2026-11-02', 1000, 'saving');
+  const expenseRow = mk('st-2', '2026-11-02', 1000, 'expense');
+  assert.deepEqual([...L.findCrossDuplicates([pay], [incomeRow, expenseRow])], ['st-2']);
+});
+
+test('groupByDay: Art, Quelle, mehrere Kategorien, ausgenommene und Sortierung', () => {
+  const list = [
+    mk('gehalt', '2026-11-03', -250000, 'income'),
+    mk('rewe', '2026-11-04', 12000, 'expense', { categoryId: 'lebensmittel' }),
+    mk('bahn', '2026-11-04', 3000, 'expense', { categoryId: 'mobilitaet', source: 'shortcut' }),
+    mk('kaution', '2026-11-05', 900, 'expense', { excluded: true }),
+  ];
+  const ids = (f) => L.groupByDay(list, f).flatMap((g) => g.items.map((t) => t.id));
+  assert.deepEqual(ids({}), ['kaution', 'bahn', 'rewe', 'gehalt']);
+  assert.deepEqual(ids({ kind: 'income' }), ['gehalt']);
+  assert.deepEqual(ids({ kind: 'expense' }), ['kaution', 'bahn', 'rewe']);
+  assert.deepEqual(ids({ sources: ['shortcut'] }), ['bahn']);
+  assert.deepEqual(ids({ categoryIds: ['lebensmittel', 'mobilitaet'] }), ['bahn', 'rewe']);
+  assert.deepEqual(ids({ categoryIds: [null] }), ['kaution', 'gehalt']);
+  assert.deepEqual(ids({ categoryIds: [] }), ['kaution', 'bahn', 'rewe', 'gehalt']);
+  assert.deepEqual(ids({ hideExcluded: true }), ['bahn', 'rewe', 'gehalt']);
+  assert.deepEqual(ids({ sort: 'old' }), ['gehalt', 'rewe', 'bahn', 'kaution']);
+  // Nach Betrag: eine Gruppe ohne Datum, Einnahmen nach dem Betrag ohne Vorzeichen.
+  const big = L.groupByDay(list, { sort: 'big' });
+  assert.equal(big.length, 1);
+  assert.equal(big[0].date, null);
+  assert.deepEqual(big[0].items.map((t) => t.id), ['gehalt', 'rewe', 'bahn', 'kaution']);
+});
+
+test('groupByDay: Summen trennen Ausgaben und Einnahmen', () => {
+  const list = [mk('gehalt', '2026-11-03', -250000, 'income'), mk('rewe', '2026-11-03', 12000, 'expense'), mk('etf', '2026-11-03', 5000, 'saving')];
+  const [g] = L.groupByDay(list, {});
+  assert.equal(g.totalCents, 12000);
+  assert.equal(g.incomeCents, 250000);
+});
+
+test('yearSummary: Einnahmen und Sparen im Jahr', () => {
+  const list = [mk('g1', '2026-03-03', -200000, 'income'), mk('g2', '2026-04-03', -200000, 'income'), mk('e', '2026-04-04', 5000, 'saving'), mk('r', '2026-04-05', 9000, 'expense')];
+  const y = L.yearSummary(list, '2026', '2026-11-20');
+  assert.equal(y.incomeCents, 400000);
+  assert.equal(y.savingCents, 5000);
+  assert.equal(y.totalCents, 9000);
+});
