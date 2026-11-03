@@ -61,6 +61,10 @@ in der Sicherung. Gratis sind 20 Abrufe am Tag, einer je Wertpapier. Ohne Schlü
 der Abruf scheitert, gehen Kurse wie bisher von Hand (alle Positionen auf einer Seite); ein neuerer Kurs von Hand wird
 nicht überschrieben.
 
+**Krypto**: Positionen der Art „Krypto“ mit Bitcoin oder Ethereum holen ihren Kurs ohne Schlüssel und ohne Konto von
+[CoinGecko](https://www.coingecko.com/) (ein Abruf für beide, beim Öffnen höchstens alle 15 Minuten). Andere Coins gehen
+von Hand. Menge auf sechs Nachkommastellen genau.
+
 Fast alles lässt sich direkt danach mit **rückgängig** zurücknehmen (Löschen, Einordnen, Import, Regeln, Budget).
 Beispieldaten haben eine eigene Quelle und lassen sich getrennt von echten Daten entfernen.
 
@@ -84,7 +88,7 @@ Die ID einer Zahlung ist ein Hash der Zeile, deshalb ist der Import beliebig wie
 | `src/model.js` | Datenmodell, Kategorie-IDs, Validierung, Export/Import, Migration |
 | `src/logic.js` | Reine Logik: Zeilen lesen, Beträge parsen, Regeln, Monatsauswertung |
 | `src/accounts.js` | Reine Logik: Konto einer Buchung, Kontostände, Vermögen, Geldfluss, frei für den Monat |
-| `src/prices.js` | Reine Logik für Kurse aus dem Netz: Adresse, passender Kurs je ISIN, Eintragen |
+| `src/prices.js` | Reine Logik für Kurse aus dem Netz: Adressen (EODHD, CoinGecko), passender Kurs je ISIN oder Coin, Eintragen |
 | `src/statement.js` | Reine Logik: Kontoauszüge (Textstücke mit Position) von Trade Republic und ING lesen |
 | `src/pdf.js` | Adapter zu pdf.js (`vendor/pdfjs`, Apache-2.0), wird erst beim ersten PDF geladen |
 | `src/catalog.js` | Startregeln für häufige Händler (vom Assistenten zusammengestellt, ohne Gewähr) |

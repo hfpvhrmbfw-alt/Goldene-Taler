@@ -301,7 +301,7 @@ body::before { content:""; position:fixed; inset:0 0 auto; height:env(safe-area-
 .btn.danger:hover { background:var(--err); color:var(--bg); }
 .textbtn { border:0; background:transparent; font:500 calc(16*var(--u)) var(--font-body); color:var(--accent-text); min-height:var(--tap); padding:0 var(--s2); margin-right:calc(var(--s2) * -1); cursor:pointer; border-radius:var(--r-control); }
 .textbtn.danger { color:var(--err); }
-.textbtn[hidden] { display:none; }
+.textbtn[hidden], .field[hidden], .ruleopt[hidden] { display:none; }
 .err-text { color:var(--err); margin:0; }
 .inline-input { font:inherit; width:8em; max-width:100%; padding:2px 6px; background:var(--surface); color:var(--ink); border:0; border-bottom:1.5px solid var(--ink); }
 #rule-offer { margin:0; }

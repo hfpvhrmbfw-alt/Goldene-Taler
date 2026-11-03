@@ -10,7 +10,7 @@ import {
   categoryKind, mergeCategory, isOwnAccountMove, transfersIn,
 } from './logic.js';
 import { parseStatement } from './statement.js';
-import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind } from './prices.js';
+import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind, coinUrl, pickCoinQuotes, coinsToFetch, COIN_NAMES } from './prices.js';
 import { pdfPages } from './pdf.js';
 import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
@@ -33,13 +33,13 @@ const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
   importReport: '', fresh: new Set(), editing: null, editingRule: null, folds: { cats: true, merchants: true, fixed: true }, budgetShow: null, editKind: 'expense', catEditing: null,
-  accountId: null, listAccount: null, tplBank: null, accountEditing: null, accountType: 'konto', positionEditing: null, positionKind: 'etf', pricesAccount: null,
+  accountId: null, listAccount: null, tplBank: null, accountEditing: null, accountType: 'konto', positionEditing: null, positionKind: 'etf', positionCoin: '', pricesAccount: null,
 };
 // Klappbare Abschnitte der Übersicht: offen, solange nicht ausdrücklich zugeklappt.
 for (const k of Object.keys(view.folds)) {
   try { view.folds[k] = localStorage.getItem(`taler:${k}`) !== 'zu'; } catch { /* egal */ }
 }
-const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false, priceKey: null, priceFetch: null, fetchingPrices: false };
+const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false, priceKey: null, priceFetch: null, fetchingPrices: false, coinFetchAt: 0 };
 
 // ---------- Speichern ----------
 /** Kategorienliste setzen: Zustand und Oberfläche kennen dieselbe Liste. */
@@ -971,6 +971,23 @@ const parseUnits = (text) => (String(text || '').trim() ? quantityIn(`Stück ${t
 function setPositionKind(kind) {
   view.positionKind = kind;
   for (const b of document.querySelectorAll('#position-kind [data-pkind]')) b.setAttribute('aria-pressed', String(b.dataset.pkind === kind));
+  const krypto = kind === 'krypto';
+  // Krypto: Coin statt ISIN, kein Sparplan aus dem Auszug, Menge statt Stück.
+  $('#position-isin').hidden = krypto;
+  $('#position-plan').hidden = krypto;
+  $('#position-coin-field').hidden = !krypto;
+  $('#position-units-cap').textContent = krypto ? 'menge' : 'stück';
+  $('#position-price-cap').textContent = krypto ? 'kurs je coin' : 'kurs je stück';
+  if (krypto && !view.positionCoin && view.positionEditing?.p?.kind !== 'krypto') setPositionCoin('BTC');
+}
+
+function setPositionCoin(coin) {
+  const f = $('#position-form');
+  const before = COIN_NAMES[view.positionCoin];
+  view.positionCoin = coin;
+  for (const b of document.querySelectorAll('#position-coin [data-coin]')) b.setAttribute('aria-pressed', String(b.dataset.coin === coin));
+  // Name mitziehen, solange er leer ist oder noch der vorgeschlagene.
+  if (COIN_NAMES[coin] && (!f.name.value.trim() || f.name.value === before)) f.name.value = COIN_NAMES[coin];
 }
 
 /** Position eintragen oder ändern. Bei einer bestehenden stehen Stück und Kaufwert inklusive der Sparplan-Käufe bis heute. */
@@ -988,9 +1005,11 @@ function openPositionEditor(id, { accountId = null, isin = '', name = '' } = {})
   f.price.value = p?.priceCents != null ? ui.amountInput(p.priceCents) : '';
   f.priceDate.value = p?.priceDate || clock().today;
   f.plan.checked = p ? p.plan : !!isin;
+  view.positionCoin = p ? p.coin : '';
+  for (const b of document.querySelectorAll('#position-coin [data-coin]')) b.setAttribute('aria-pressed', String(b.dataset.coin === view.positionCoin));
   setPositionKind(p ? p.kind : 'etf');
   $('#position-hint').textContent = `im ${acc.name === 'Depot' ? `Depot von ${acc.bank}` : acc.name}`;
-  $('#position-title').textContent = p ? 'position ändern' : 'aktie oder etf';
+  $('#position-title').textContent = p ? 'position ändern' : 'neue position';
   $('#position-delete').hidden = !p;
   $('#position-error').hidden = true;
   openSheet($('#position-dialog'));
@@ -1013,13 +1032,15 @@ async function savePositionEditor() {
     id: p ? p.id : `p-${Date.now().toString(36)}`, accountId, name: f.name.value, isin: f.isin.value, kind: view.positionKind,
     unitsMicro: units, costCents: Math.abs(cost.cents), date: today,
     priceCents: price ? Math.abs(price.cents) : p?.priceCents ?? null, priceDate: price ? f.priceDate.value || today : p?.priceDate ?? null,
-    plan: f.plan.checked,
+    plan: f.plan.checked && view.positionKind !== 'krypto', coin: view.positionCoin,
   });
   if (!next) return err('Bitte Name und Datum prüfen.');
   state.positions = p ? state.positions.map((x) => (x.id === p.id ? next : x)) : [...state.positions, next];
   await savePositions();
   render();
   undoable(p ? 'Position gespeichert' : `„${next.name}“ eingetragen`, snap);
+  // Neuer Coin ohne Kurs: gleich holen, das kostet nichts.
+  if (next.coin && !price) fetchPrices({ quiet: true, stocks: false });
   return true;
 }
 
@@ -1047,49 +1068,83 @@ const PRICE_ERRORS = {
   net: 'Kurse: Gerade nicht erreichbar. Später noch einmal versuchen.',
 };
 
-/** Holt die Schlusskurse aller Positionen mit ISIN. still = automatisch beim Start, dann nur bei Änderungen ein Hinweis. */
-async function fetchPrices({ quiet = false } = {}) {
-  const isins = isinsToFetch(state.positions);
-  if (!info.priceKey || !isins.length || info.fetchingPrices) return;
+/** Ein Abruf mit Zeitlimit. Antwortet mit json oder dem Fehlerstatus; wirft, wenn das Netz fehlt. */
+async function getJson(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    return res.ok ? { json: await res.json() } : { status: res.status };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Krypto bewegt sich laufend: höchstens alle 15 Minuten neu holen. */
+const COIN_EVERY_MS = 15 * 60 * 1000;
+
+/**
+ * Holt Kurse: BTC und ETH immer (CoinGecko, ohne Schlüssel), Aktien und ETFs per ISIN, wenn ein Schlüssel da ist
+ * und `stocks` an ist. quiet = automatisch, dann nur beim täglichen Abruf ein Hinweis.
+ */
+async function fetchPrices({ quiet = false, stocks = true } = {}) {
+  const cur = state.settings.currency;
+  const isins = info.priceKey && stocks ? isinsToFetch(state.positions) : [];
+  const coins = coinsToFetch(state.positions);
+  if ((!isins.length && !coins.length) || info.fetchingPrices) return;
   info.fetchingPrices = true;
   if (!quiet) { render(); toast('Kurse werden geholt …'); }
   const quotes = new Map();
   const missing = [];
   let failure = null;
-  for (const isin of isins) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 12000);
+  let coinFailure = false;
+  if (coins.length) {
     try {
-      const res = await fetch(searchUrl(isin, info.priceKey), { signal: ctrl.signal, cache: 'no-store' });
-      if (!res.ok) { failure = failureKind(res.status); break; }
-      const q = pickQuote(await res.json(), isin, state.settings.currency);
+      const r = await getJson(coinUrl(coins, cur));
+      if (r.json) for (const [k, q] of pickCoinQuotes(r.json, cur, (sec) => localDate(new Date(sec * 1000)))) quotes.set(k, q);
+      else coinFailure = true;
+    } catch {
+      coinFailure = true;
+    }
+    info.coinFetchAt = Date.now();
+  }
+  for (const isin of isins) {
+    try {
+      const r = await getJson(searchUrl(isin, info.priceKey));
+      if (!r.json) { failure = failureKind(r.status); break; }
+      const q = pickQuote(r.json, isin, cur);
       if (q) quotes.set(isin, q); else missing.push(isin);
     } catch {
       failure = 'net';
       break;
-    } finally {
-      clearTimeout(timer);
     }
   }
   info.fetchingPrices = false;
-  info.priceFetch = { date: clock().today, ok: !failure };
-  await db.setMeta('priceFetch', info.priceFetch);
+  if (isins.length) {
+    info.priceFetch = { date: clock().today, ok: !failure };
+    await db.setMeta('priceFetch', info.priceFetch);
+  }
   const { positions, changed } = applyQuotes(state.positions, quotes);
   if (changed) {
     state.positions = positions;
     await savePositions();
   }
   render();
-  if (failure && (!quiet || failure === 'key')) { toast(PRICE_ERRORS[failure]); return; }
-  if (quiet && !changed) return;
+  const errs = [];
+  if (failure && (!quiet || failure === 'key')) errs.push(PRICE_ERRORS[failure]);
+  if (coinFailure && !quiet) errs.push('Krypto-Kurse: Gerade nicht erreichbar.');
+  if (errs.length) { toast(errs.join(' ')); return; }
+  if (quiet && !(isins.length && changed)) return;
   const names = missing.map((i) => state.positions.find((p) => p.isin === i)?.name || i);
   const msg = changed ? `${changed} ${changed === 1 ? 'Kurs' : 'Kurse'} aus dem Netz geholt` : 'Kurse sind schon aktuell';
-  toast(names.length ? `${msg}. Ohne Kurs in ${state.settings.currency}: ${names.join(', ')}` : msg);
+  toast(names.length ? `${msg}. Ohne Kurs in ${cur}: ${names.join(', ')}` : msg);
 }
 
-/** Einmal am Tag von selbst, wenn ein Schlüssel da ist. */
-function pricesDue() {
-  return !!info.priceKey && info.priceFetch?.date !== clock().today && isinsToFetch(state.positions).length > 0;
+/** Von selbst beim Öffnen: Aktien und ETFs einmal am Tag (mit Schlüssel), Krypto alle 15 Minuten. */
+function autoPrices() {
+  const stocks = !!info.priceKey && info.priceFetch?.date !== clock().today && isinsToFetch(state.positions).length > 0;
+  const coins = coinsToFetch(state.positions).length > 0 && (!info.coinFetchAt || Date.now() - info.coinFetchAt > COIN_EVERY_MS);
+  if (stocks || coins) fetchPrices({ quiet: true, stocks });
 }
 
 async function savePriceKey(key) {
@@ -1447,6 +1502,10 @@ function bind() {
     const k = e.target.closest('[data-pkind]')?.dataset.pkind;
     if (k) setPositionKind(k);
   });
+  $('#position-coin').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-coin]');
+    if (b) setPositionCoin(b.dataset.coin);
+  });
   $('#prices-dialog').addEventListener('submit', async (e) => {
     if (e.submitter?.value !== 'save') return;
     e.preventDefault();
@@ -1519,8 +1578,8 @@ async function start() {
     await db.setMeta('transferScan', 1);
     if (n) { render(); undoable(`${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen zwischen deinen Konten`, snap); }
   }
-  if (pricesDue()) fetchPrices({ quiet: true });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && pricesDue()) fetchPrices({ quiet: true }); });
+  autoPrices();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoPrices(); });
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;
