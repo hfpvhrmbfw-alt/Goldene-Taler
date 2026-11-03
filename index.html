@@ -197,23 +197,28 @@
 <dialog class="sheet" id="position-dialog" aria-labelledby="position-title">
   <form method="dialog" id="position-form" class="stack">
     <div class="sheethead">
-      <h2 id="position-title">aktie oder etf</h2>
+      <h2 id="position-title">neue position</h2>
     </div>
     <p class="muted small" id="position-hint"></p>
     <label class="field"><span class="cap">name</span><input name="name" required maxlength="60" placeholder="z. B. MSCI World ETF" autocomplete="off"></label>
-    <label class="field"><span class="cap">isin oder wkn</span><input name="isin" maxlength="12" autocapitalize="characters" autocomplete="off" placeholder="z. B. IE00B4L5Y983"></label>
     <div class="seg full" id="position-kind" role="group" aria-label="Art">
-      <button type="button" data-pkind="etf">etf</button><button type="button" data-pkind="aktie">aktie</button><button type="button" data-pkind="fonds">fonds</button><button type="button" data-pkind="anderes">anderes</button>
+      <button type="button" data-pkind="etf">etf</button><button type="button" data-pkind="aktie">aktie</button><button type="button" data-pkind="fonds">fonds</button><button type="button" data-pkind="krypto">krypto</button><button type="button" data-pkind="anderes">anderes</button>
+    </div>
+    <label class="field" id="position-isin"><span class="cap">isin oder wkn</span><input name="isin" maxlength="12" autocapitalize="characters" autocomplete="off" placeholder="z. B. IE00B4L5Y983"></label>
+    <div class="field" id="position-coin-field" hidden><span class="cap">kurs aus dem netz</span>
+      <div class="seg full" id="position-coin" role="group" aria-label="Coin">
+        <button type="button" data-coin="BTC">bitcoin</button><button type="button" data-coin="ETH">ethereum</button><button type="button" data-coin="">von hand</button>
+      </div>
     </div>
     <div class="two">
-      <label class="field"><span class="cap">stück</span><input name="units" inputmode="decimal" placeholder="z. B. 12,5" autocomplete="off"></label>
+      <label class="field"><span class="cap" id="position-units-cap">stück</span><input name="units" inputmode="decimal" placeholder="z. B. 12,5" autocomplete="off"></label>
       <label class="field"><span class="cap">kaufwert gesamt</span><input name="cost" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
     </div>
     <div class="two">
-      <label class="field"><span class="cap">kurs je stück</span><input name="price" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
+      <label class="field"><span class="cap" id="position-price-cap">kurs je stück</span><input name="price" inputmode="decimal" placeholder="0,00" autocomplete="off"></label>
       <label class="field"><span class="cap">vom</span><input name="priceDate" type="date"></label>
     </div>
-    <label class="ruleopt twoline"><input type="checkbox" name="plan"><span>Sparplan-Käufe dazuzählen<span class="muted small">Ausführungen mit dieser ISIN aus dem Kontoauszug erhöhen künftig Kaufwert und Stück</span></span></label>
+    <label class="ruleopt twoline" id="position-plan"><input type="checkbox" name="plan"><span>Sparplan-Käufe dazuzählen<span class="muted small">Ausführungen mit dieser ISIN aus dem Kontoauszug erhöhen künftig Kaufwert und Stück</span></span></label>
     <p class="err-text" id="position-error" role="alert" hidden></p>
     <button class="textbtn danger deletebtn" value="delete" id="position-delete" formnovalidate>position löschen</button>
     <div class="actions sticky">

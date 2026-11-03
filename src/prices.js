@@ -1,5 +1,6 @@
-// Kurse aus dem Netz (EODHD). Rein: baut die Adresse, wählt aus der Antwort den passenden Kurs, trägt ihn ein.
-// Abruf und Uhr bleiben in main.js. Ins Netz geht nur die ISIN, nie ein Betrag.
+// Kurse aus dem Netz: Aktien und ETFs per ISIN von EODHD (mit Schlüssel), BTC und ETH von CoinGecko (ohne).
+// Rein: baut die Adressen, wählt aus der Antwort den passenden Kurs, trägt ihn ein.
+// Abruf und Uhr bleiben in main.js. Ins Netz geht nur die ISIN oder der Coin, nie ein Betrag.
 
 export const PRICE_SOURCE = 'EODHD';
 export const PRICE_KEY_URL = 'https://eodhd.com/register';
@@ -32,19 +33,56 @@ export function pickQuote(results, isin, currency = 'EUR') {
   return { priceCents: Math.round(Number(h.previousClose) * 100), priceDate: h.previousCloseDate, symbol: `${h.Code}.${h.Exchange}` };
 }
 
+/** Coins mit Kurs aus dem Netz: Kürzel → Name bei CoinGecko. */
+export const COINS = { BTC: 'bitcoin', ETH: 'ethereum' };
+export const COIN_NAMES = { BTC: 'Bitcoin', ETH: 'Ethereum' };
+
+/** Ein Abruf für alle Coins, ohne Schlüssel. */
+export function coinUrl(coins, currency = 'EUR') {
+  return `https://api.coingecko.com/api/v3/simple/price?ids=${coins.map((c) => COINS[c]).join(',')}&vs_currencies=${currency.toLowerCase()}&include_last_updated_at=true`;
+}
+
+/**
+ * Kurse aus der CoinGecko-Antwort. `toDate` macht aus Sekunden seit 1970 ein Datum (die Uhr gehört main.js).
+ * @returns {Map<string, {priceCents: number, priceDate: string}>} Schlüssel wie quoteKey
+ */
+export function pickCoinQuotes(json, currency, toDate) {
+  const out = new Map();
+  const cur = String(currency).toLowerCase();
+  for (const [coin, id] of Object.entries(COINS)) {
+    const row = json && typeof json === 'object' ? json[id] : null;
+    const v = Number(row?.[cur]);
+    const at = Number(row?.last_updated_at);
+    if (v > 0 && at > 0) out.set(`coin:${coin}`, { priceCents: Math.round(v * 100), priceDate: toDate(at) });
+  }
+  return out;
+}
+
+/** Woran ein Kurs hängt: Coin bei Krypto, sonst ISIN. */
+export function quoteKey(p) {
+  if (p.kind === 'krypto') return p.coin ? `coin:${p.coin}` : '';
+  return p.isin || '';
+}
+
 /** ISINs, für die sich ein Abruf lohnt, ohne Doppelte. */
 export function isinsToFetch(positions) {
-  return [...new Set(positions.map((p) => p.isin).filter(Boolean))];
+  return [...new Set(positions.filter((p) => p.kind !== 'krypto').map((p) => p.isin).filter(Boolean))];
+}
+
+/** Coins im Bestand, ohne Doppelte. */
+export function coinsToFetch(positions) {
+  return [...new Set(positions.filter((p) => p.kind === 'krypto' && COINS[p.coin]).map((p) => p.coin))];
 }
 
 /**
  * Trägt geholte Kurse ein. Ein von Hand eingetragener neuerer Kurs bleibt stehen.
- * @param {Map<string, {priceCents: number, priceDate: string}>} quotes nach ISIN
+ * @param {Map<string, {priceCents: number, priceDate: string}>} quotes nach quoteKey (ISIN oder „coin:BTC“)
  */
 export function applyQuotes(positions, quotes) {
   let changed = 0;
   const next = positions.map((p) => {
-    const q = p.isin && quotes.get(p.isin);
+    const k = quoteKey(p);
+    const q = k && quotes.get(k);
     if (!q || (p.priceDate && p.priceDate > q.priceDate)) return p;
     if (p.priceCents === q.priceCents && p.priceDate === q.priceDate) return p;
     changed++;

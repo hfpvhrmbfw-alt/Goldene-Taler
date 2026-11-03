@@ -864,7 +864,7 @@ function priceKeyBlock(info, today) {
     ${item({ tag: 'button', attrs: 'data-act="remove-price-key"', title: 'Schlüssel entfernen', sub: 'Kurse wieder nur von Hand', n: 'entfernen', nCls: 'muted' })}
   </ul>`;
   }
-  return `<div id="price-key"><p class="muted small">Taler holt die Schlusskurse deiner Aktien und ETFs einmal am Tag über die ISIN von ${PRICE_SOURCE}. Dafür brauchst du einen kostenlosen Schlüssel: auf <a href="${PRICE_KEY_URL}" target="_blank" rel="noopener">eodhd.com</a> registrieren, im Dashboard den <b>API Token</b> kopieren und hier einfügen. Ins Netz geht nur die ISIN, keine Beträge. Gratis sind 20 Abrufe am Tag, Taler braucht einen je Wertpapier.</p>
+  return `<div id="price-key"><p class="muted small">Taler holt die Schlusskurse deiner Aktien und ETFs einmal am Tag über die ISIN von ${PRICE_SOURCE}. Dafür brauchst du einen kostenlosen Schlüssel: auf <a href="${PRICE_KEY_URL}" target="_blank" rel="noopener">eodhd.com</a> registrieren, im Dashboard den <b>API Token</b> kopieren und hier einfügen. Ins Netz geht nur die ISIN, keine Beträge. Gratis sind 20 Abrufe am Tag, Taler braucht einen je Wertpapier. Bitcoin und Ethereum holt Taler auch ohne Schlüssel (CoinGecko).</p>
   <form class="inlineform" id="price-key-form">
     <label class="field"><span class="visually-hidden">Schlüssel von ${PRICE_SOURCE}</span><input name="key" placeholder="API Token einfügen" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="80"></label>
     <button class="btn">speichern</button>
@@ -878,13 +878,14 @@ function depotBlocks(a, d, state, cur, info) {
   const newest = (d ? d.items : []).reduce((m, x) => (x.position.priceDate > m ? x.position.priceDate : m), '');
   let html = `${head('positionen')}<ul class="list">`;
   for (const { position: p, value: v } of d ? d.items : []) {
-    const sub = [POSITION_KIND_LABELS[p.kind], `${unitsText(v.unitsMicro)} Stück`, p.plan && v.buys ? `${plural(v.buys, 'Sparplan-Kauf', 'Sparplan-Käufe')} dazu` : '', p.priceCents === null ? 'noch kein Kurs' : '', online && !p.isin ? 'ohne ISIN, Kurs von Hand' : p.priceDate && p.priceDate < newest ? `Kurs vom ${shortDate(p.priceDate)}` : ''].filter(Boolean).join(' · ');
+    const krypto = p.kind === 'krypto';
+    const sub = [POSITION_KIND_LABELS[p.kind], `${unitsText(v.unitsMicro)} ${krypto && p.coin ? p.coin : 'Stück'}`, p.plan && v.buys ? `${plural(v.buys, 'Sparplan-Kauf', 'Sparplan-Käufe')} dazu` : '', p.priceCents === null ? 'noch kein Kurs' : '', krypto && !p.coin ? 'Kurs von Hand' : online && !krypto && !p.isin ? 'ohne ISIN, Kurs von Hand' : p.priceDate && p.priceDate < newest ? `Kurs vom ${shortDate(p.priceDate)}` : ''].filter(Boolean).join(' · ');
     html += item({
       tag: 'button', attrs: `data-act="edit-position" data-id="${esc(p.id)}"`, title: esc(p.name), sub: esc(sub),
       n: `${money(v.valueCents ?? v.costCents, cur)}${v.gainCents !== null ? gainPct(v.gainCents, v.costCents) : ''}`, chev: true,
     });
   }
-  html += item({ tag: 'button', attrs: `data-act="new-position" data-account="${esc(a.id)}"`, title: '<span class="addtext">+ aktie oder etf eintragen</span>' });
+  html += item({ tag: 'button', attrs: `data-act="new-position" data-account="${esc(a.id)}"`, title: '<span class="addtext">+ aktie, etf oder krypto eintragen</span>' });
   html += '</ul>';
   const plans = depotPlans(a, state.transactions, state.accounts);
   if (plans.length) {
@@ -899,13 +900,21 @@ function depotBlocks(a, d, state, cur, info) {
     html += '</ul>';
   }
   if (d) {
-    const oldest = d.priceDate ? ` Die ältesten sind vom ${shortDate(d.priceDate)}` : '';
-    const failed = online && info.priceFetch && !info.priceFetch.ok ? ' Der letzte Abruf hat nicht geklappt.' : '';
-    html += online
-      ? `<div class="note info"><span class="cap">kurse</span>Taler holt einmal am Tag die Schlusskurse aus dem Netz (${PRICE_SOURCE}), über die ISIN.${oldest}${failed}</div>
-    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: 'data-act="fetch-prices"', title: 'Kurse jetzt holen', sub: info.fetchingPrices ? 'läuft gerade …' : 'Schlusskurs vom letzten Handelstag', chev: true })}${item({ tag: 'button', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse von Hand', sub: 'für Positionen ohne ISIN', chev: true })}</ul>`
-      : `<div class="note info"><span class="cap">kurse</span>Kurse trägst du von Hand ein.${oldest} Mit einem kostenlosen Schlüssel holt Taler sie selbst aus dem Netz.</div>
-    <ul class="list">${item({ tag: 'button', cls: 'action', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: 'Kurse aktualisieren', sub: 'alle Positionen auf einer Seite', chev: true })}${item({ tag: 'button', attrs: 'data-act="goto-prices"', title: 'Kurse aus dem Netz einrichten', sub: 'einmalig, in den Einstellungen', chev: true })}</ul>`;
+    const list = d.items.map((x) => x.position);
+    const coins = list.some((p) => p.kind === 'krypto' && p.coin);
+    const stocks = list.some((p) => p.kind !== 'krypto');
+    const parts = [];
+    if (stocks) parts.push(online ? `Aktien und ETFs holt Taler einmal am Tag über die ISIN (${PRICE_SOURCE}).` : 'Aktien und ETFs trägst du von Hand ein. Mit einem kostenlosen Schlüssel holt Taler sie selbst.');
+    if (coins) parts.push('Bitcoin und Ethereum kommen bei jedem Öffnen von CoinGecko, ohne Schlüssel.');
+    if (!parts.length) parts.push('Kurse trägst du von Hand ein.');
+    if (d.priceDate) parts.push(`Die ältesten sind vom ${shortDate(d.priceDate)}`);
+    if (online && stocks && info.priceFetch && !info.priceFetch.ok) parts.push('Der letzte Abruf hat nicht geklappt.');
+    const auto = (online && stocks) || coins;
+    html += `<div class="note info"><span class="cap">kurse</span>${esc(parts.join(' '))}</div><ul class="list">`;
+    if (auto) html += item({ tag: 'button', cls: 'action', attrs: 'data-act="fetch-prices"', title: 'Kurse jetzt holen', sub: info.fetchingPrices ? 'läuft gerade …' : 'aus dem Netz', chev: true });
+    html += item({ tag: 'button', cls: auto ? '' : 'action', attrs: `data-act="edit-prices" data-id="${esc(a.id)}"`, title: auto ? 'Kurse von Hand' : 'Kurse aktualisieren', sub: auto ? 'für Positionen ohne Abruf' : 'alle Positionen auf einer Seite', chev: true });
+    if (!online && stocks) html += item({ tag: 'button', attrs: 'data-act="goto-prices"', title: 'Kurse aus dem Netz einrichten', sub: 'einmalig, in den Einstellungen', chev: true });
+    html += '</ul>';
   }
   return html;
 }

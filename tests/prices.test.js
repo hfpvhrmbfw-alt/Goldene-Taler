@@ -58,3 +58,33 @@ test('failureKind', () => {
   assert.equal(failureKind(429), 'limit');
   assert.equal(failureKind(500), 'net');
 });
+
+import { coinUrl, pickCoinQuotes, coinsToFetch, quoteKey } from '../src/prices.js';
+import { sanitizePosition } from '../src/model.js';
+
+test('coinUrl: ein Abruf für BTC und ETH in Euro', () => {
+  assert.equal(coinUrl(['BTC', 'ETH'], 'EUR'), 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=eur&include_last_updated_at=true');
+});
+
+test('pickCoinQuotes: Kurs in Cent, Datum über die übergebene Uhr', () => {
+  const json = { bitcoin: { eur: 61234.567, last_updated_at: 1793000000 }, ethereum: { usd: 3000, last_updated_at: 1793000000 } };
+  const q = pickCoinQuotes(json, 'EUR', () => '2026-11-03');
+  assert.deepEqual([...q], [['coin:BTC', { priceCents: 6123457, priceDate: '2026-11-03' }]]);
+  assert.equal(pickCoinQuotes(null, 'EUR', () => 'x').size, 0);
+});
+
+test('Krypto: Coin statt ISIN, nur bekannte Coins', () => {
+  const base = { id: 'k', accountId: 'a', name: 'Bitcoin', date: '2026-11-03', kind: 'krypto', isin: 'IE00TEST0001' };
+  assert.equal(sanitizePosition({ ...base, coin: 'BTC' }).coin, 'BTC');
+  assert.equal(sanitizePosition({ ...base, coin: 'DOGE' }).coin, '');
+  assert.equal(sanitizePosition({ ...base, kind: 'etf', coin: 'BTC' }).coin, '');
+  const ps = [sanitizePosition({ ...base, coin: 'BTC' }), sanitizePosition({ ...base, id: 'k2', coin: 'BTC' }), sanitizePosition({ ...base, id: 'k3', coin: 'ETH' }), sanitizePosition({ ...base, id: 'e', kind: 'etf' })];
+  assert.deepEqual(coinsToFetch(ps), ['BTC', 'ETH']);
+  assert.deepEqual(isinsToFetch(ps), ['IE00TEST0001']);
+  assert.equal(quoteKey(ps[0]), 'coin:BTC');
+  assert.equal(quoteKey(sanitizePosition({ ...base, coin: '' })), '');
+  const r = applyQuotes(ps, new Map([['coin:BTC', { priceCents: 6000000, priceDate: '2026-11-03' }], ['IE00TEST0001', { priceCents: 100, priceDate: '2026-11-03' }]]));
+  assert.equal(r.changed, 3);
+  assert.equal(r.positions[2].priceCents, null);
+  assert.equal(r.positions[3].priceCents, 100);
+});

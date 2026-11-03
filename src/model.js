@@ -41,7 +41,9 @@ export const ACCOUNT_TYPES = ['konto', 'tagesgeld', 'depot'];
  */
 
 /** Art einer Position im Depot. */
-export const POSITION_KINDS = ['etf', 'aktie', 'fonds', 'anderes'];
+export const POSITION_KINDS = ['etf', 'aktie', 'fonds', 'krypto', 'anderes'];
+/** Coins, deren Kurs Taler selbst holt. */
+export const POSITION_COINS = ['BTC', 'ETH'];
 
 /**
  * Eine Aktie, ein ETF oder Fonds in einem Depot. Stück und Kaufwert gelten am Tag `date`; Sparplan-Ausführungen danach
@@ -58,6 +60,7 @@ export const POSITION_KINDS = ['etf', 'aktie', 'fonds', 'anderes'];
  * @property {number|null} priceCents  Kurs je Stück
  * @property {string|null} priceDate   YYYY-MM-DD
  * @property {boolean} plan       Sparplan-Buchungen mit dieser ISIN dazuzählen
+ * @property {''|'BTC'|'ETH'} coin  nur bei Krypto: Kurs kommt von CoinGecko
  */
 
 /**
@@ -220,6 +223,7 @@ export function sanitizePosition(raw) {
     priceCents: priceOk ? Math.round(raw.priceCents) : null,
     priceDate: priceOk ? raw.priceDate : null,
     plan: raw.plan === true,
+    coin: raw.kind === 'krypto' && POSITION_COINS.includes(raw.coin) ? raw.coin : '',
   };
 }
 
