@@ -206,7 +206,7 @@ button.item { width:100%; border-left:0; border-right:0; border-top:0; backgroun
 .tabbar a { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:calc(var(--tap, 44px) + 12px); color:var(--muted); text-decoration:none; font:500 calc(12*var(--u))/1 var(--font-label); letter-spacing:var(--cap-tracking, .06em); text-transform:var(--cap-transform, uppercase); }
 .tabbar a svg { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
 .tabbar a[aria-current] { color:var(--ink); font-weight:600; }
-.tabbar a[aria-current]::after { content:""; width:4px; height:4px; border-radius:50%; background:var(--accent); }
+
 
 dialog.sheet { position:fixed; inset:auto 0 0 0; margin:0 auto; width:100%; max-width:var(--maxw); max-height:85dvh; border:0; border-top:1px solid var(--line); padding:var(--s2) var(--gutter) calc(var(--s5) + env(safe-area-inset-bottom, 0px)); background:var(--surface); color:var(--ink); border-radius:var(--r-card) var(--r-card) 0 0; overflow:auto; }
 dialog.sheet::backdrop { background:rgb(0 0 0 / .35); }
@@ -327,14 +327,36 @@ dialog.sheet .stack { padding-top:var(--s1); }
 h2.cap { font:500 calc(13*var(--u)) var(--font-label); color:var(--muted); }
 .actions.sticky { position:sticky; bottom:0; background:var(--surface); padding:var(--s3) 0 calc(var(--s2) + env(safe-area-inset-bottom, 0px)); margin-bottom:calc(-1 * (var(--s4) + env(safe-area-inset-bottom, 0px))); border-top:1px solid var(--line); }
 #confirm-text { margin:var(--s2) 0 var(--s4); font-size:calc(17*var(--u)); }
+/* Bewegung nach Castra Porto: Gleiten für Sheets und Seiten, Federn für Antippen und Umschalter (src/motion.js). */
+:root { --ease-glide:cubic-bezier(.32,.72,0,1); --ease-spring:cubic-bezier(.34,1.56,.64,1); }
+@supports (transition-timing-function:linear(0,1)) { :root { --ease-spring:linear(0,.009,.035 2.1%,.141 4.4%,.723 12.9%,.938 16.7%,1.017,1.077,1.121,1.149 24.3%,1.159,1.163,1.161,1.154 29.9%,1.129 32.8%,1.051 39.6%,1.017 43.1%,.991,.977 51%,.974 53.8%,.975 57.1%,.997 69.8%,1.003 76.9%,1); } }
+dialog.sheet[open] { animation:fade-in .14s ease-out; }
+dialog.sheet[open]::backdrop { animation:fade-in .14s ease-out; }
+dialog.sheet.closing::backdrop { animation:fade-out .22s ease-in forwards; }
+.toast:not([hidden]) { animation:fade-in .14s ease-out; }
 @media (prefers-reduced-motion:no-preference) {
-  dialog.sheet[open] { animation:sheet-in .24s cubic-bezier(.2,.8,.2,1); }
-  dialog.sheet[open]::backdrop { animation:fade-in .24s ease-out; }
-  dialog.sheet { transition:transform .12s ease-out; }
-  .toast:not([hidden]) { animation:fade-in .18s ease-out; }
+  dialog.sheet[open] { animation:sheet-in .32s var(--ease-glide); }
+  dialog.sheet[open]::backdrop { animation:fade-in .26s ease-out; }
+  .toast:not([hidden]) { animation:toast-in .5s var(--ease-spring); }
+  /* Antippen: Knöpfe geben leicht nach und federn zurück */
+  .btn, .catbtn, .chip, .pill, .iconbtn, .backbtn, .textbtn, .kpi.tap, .seg button { transition:transform .5s var(--ease-spring), background-color .15s, color .15s; }
+  .btn:active, .catbtn:active, .chip:active, .pill:active, .iconbtn:not(:disabled):active, .kpi.tap:active, .seg button:active { transform:scale(.95); }
+  .backbtn:active, .textbtn:active { transform:scale(.97); }
 }
 @keyframes sheet-in { from { transform:translateY(100%); } to { transform:none; } }
 @keyframes fade-in { from { opacity:0; } to { opacity:1; } }
+@keyframes fade-out { from { opacity:1; } to { opacity:0; } }
+@keyframes toast-in { from { opacity:0; transform:translate(-50%, 16px) scale(.96); } to { opacity:1; transform:translate(-50%, 0); } }
+
+/* Umschalter: die helle Pille ist ein eigenes Element und gleitet (motion.js); ohne Skript bleibt der Knopf selbst hell. */
+.seg.glide { position:relative; }
+.seg.glide > button { position:relative; z-index:1; }
+.seg.glide > button[aria-pressed="true"] { background:transparent; box-shadow:none; }
+.seg-pill { position:absolute; left:0; top:0; z-index:0; background:var(--surface); border-radius:var(--r-control); box-shadow:inset 0 0 0 1px var(--line); pointer-events:none; }
+
+/* Punkt unter dem gewählten Reiter: echtes Element, damit er zum neuen Reiter gleiten kann */
+.tabbar .tdot { display:none; width:4px; height:4px; border-radius:50%; background:var(--accent); }
+.tabbar a[aria-current] .tdot { display:block; }
 
 /* Einordnen */
 .sortcard { padding:var(--s3) 0 var(--s4); border-bottom:1px solid var(--line); margin-bottom:var(--s4); }

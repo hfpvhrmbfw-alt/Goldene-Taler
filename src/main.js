@@ -15,6 +15,7 @@ import { pdfPages } from './pdf.js';
 import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
 import * as ui from './ui.js';
+import * as motion from './motion.js';
 
 const $ = (sel) => document.querySelector(sel);
 const pad = (n) => String(n).padStart(2, '0');
@@ -126,6 +127,18 @@ function render() {
   st.setAttribute('aria-label', due ? 'Einstellungen, Sicherung fällig' : 'Einstellungen');
   if (view.tab === 'overview') showCurveDay(el.querySelector('.curve'), null);
   updateBadge();
+  // Diagramme wachsen nur, wenn der Reiter zum ersten Mal oder für einen anderen Monat/ein anderes Konto gezeigt wird,
+  // nicht nach jeder kleinen Änderung. Zahlen zählen immer, wenn sich ihr Wert geändert hat.
+  const scene = [view.month, view.listMonth, view.accountId].join('|');
+  if (scenes[view.tab] !== scene) motion.grow(el);
+  scenes[view.tab] = scene;
+  motion.count(el, view.tab, (cents, n) => ui.countText(cents, n.dataset.fmt, state.settings.currency));
+}
+const scenes = {};
+
+/** Monat blättern: Inhalt gleitet in Richtung des Pfeils. */
+function slideMonth(el, from, to) {
+  if (from && to && from !== to) motion.enter(el, to > from ? 'next' : 'prev');
 }
 
 /** Verlauf: Stand an einem Tag (null = letzter Tag) in die Zeile über dem Diagramm schreiben. */
@@ -164,6 +177,8 @@ function selectTab(tab, { keepFrom = false } = {}) {
   view.tab = tab;
   if (!keepFrom) view.from = null;
   const navTab = NAV_TAB[tab] || tab;
+  const oldA = document.querySelector('.tabbar a[aria-current]');
+  const changed = $(`#view-${tab}`).hidden;
   for (const a of document.querySelectorAll('.tabbar a')) {
     if (a.dataset.tab === navTab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
@@ -171,6 +186,8 @@ function selectTab(tab, { keepFrom = false } = {}) {
   try { sessionStorage.setItem('taler:tab', tab); } catch { /* egal */ }
   render();
   window.scrollTo(0, 0);
+  motion.tabDot(oldA, document.querySelector('.tabbar a[aria-current]'));
+  if (changed) motion.enter($(`#view-${tab}`));
 }
 
 /** Rückfrage im eigenen Dialog (confirm() ist in manchen Ansichten gesperrt). */
@@ -306,6 +323,7 @@ async function importLog(text, { demo = false } = {}) {
   view.fresh = new Set(added.map((t) => t.id));
   if (added.length) view.month = monthOf(sortTransactions(added)[0].date);
   selectTab('overview');
+  if (added.length) motion.spin($('.wordmark .coin'));
   if (added.length) undoable(demo ? 'Beispieldaten geladen' : `${added.length} neue ${added.length === 1 ? 'Zahlung' : 'Zahlungen'} eingelesen`, snap);
   else toast('Keine neuen Zahlungen');
 }
@@ -660,6 +678,7 @@ async function sortInto(categoryId) {
   }
   sorter.history.push({ snap, text: `${t.merchant} → ${categoryId === null ? 'Umbuchung' : ui.catLabel(categoryId)}${n ? ` (+${n})` : ''}` });
   renderSorter();
+  sorterMoved();
   render();
 }
 
@@ -675,6 +694,15 @@ async function sorterAction(act) {
     render();
   }
   renderSorter();
+  if (act === 'skip' || act === 'undo') sorterMoved(act === 'undo');
+}
+
+/** Nächste Zahlung gleitet herein; ist alles eingeordnet, ploppt der Taler auf und der im Kopf dreht sich. */
+function sorterMoved(back = false) {
+  const card = $('#sort-body .sortcard');
+  if (card) { motion.slideIn(card, back); return; }
+  motion.pop($('#sort-body .emptyhero .coin'));
+  motion.spin($('.wordmark .coin'));
 }
 
 // ---------- Budget ----------
@@ -1191,8 +1219,15 @@ function showAccountList(id) {
 }
 
 // ---------- Sheets: Hintergrund tippen oder nach unten wischen schließt ----------
-function openSheet(d) { clearUndo(); d.style.transform = ''; d.returnValue = ''; d.showModal(); }
-function closeSheet(d, value = 'cancel') { if (d.open) d.close(value); }
+function openSheet(d) {
+  clearUndo();
+  d.returnValue = '';
+  if (d.open) { d.getAnimations().forEach((x) => x.cancel()); d.classList.remove('closing'); d.style.transform = ''; return; } // gerade am Hinausgleiten
+  d.style.transform = '';
+  d.showModal();
+}
+/** Schließen gleitet: erst nach der Bewegung kommt das close-Ereignis (Rückgabewert wie bisher). */
+function closeSheet(d, value = 'cancel') { if (d.open) motion.closeSheet(d, () => { if (d.open) d.close(value); }); }
 
 function bindSheet(d) {
   d.addEventListener('click', (e) => {
@@ -1218,7 +1253,7 @@ function bindSheet(d) {
     if (startY === null) return;
     startY = null;
     if (dy > 90) closeSheet(d);
-    d.style.transform = '';
+    else motion.springBack(d);
   });
 }
 
@@ -1236,7 +1271,12 @@ function bind() {
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
-    if (act === 'month' && b.dataset.month) { view.month = b.dataset.month; view.importReport = ''; render(); if (b.closest('.review')) window.scrollTo(0, 0); }
+    if (act === 'month' && b.dataset.month) {
+      const was = view.month;
+      view.month = b.dataset.month; view.importReport = ''; render();
+      if (b.closest('.review')) window.scrollTo(0, 0);
+      if (b.closest('.pager')) slideMonth($('#view-overview'), was, view.month);
+    }
     if (act === 'goto') selectTab(b.dataset.tab);
     if (act === 'back') {
       if (b.dataset.tab === 'overview') { view.listCats = []; view.listMerchant = null; }
@@ -1260,7 +1300,11 @@ function bind() {
       await db.setMeta('reviewDismissed', info.reviewDismissed);
       render();
     }
-    if (act === 'list-month' && b.dataset.month) { view.listMonth = b.dataset.month; view.lastListMonth = b.dataset.month; render(); }
+    if (act === 'list-month' && b.dataset.month) {
+      const was = view.listMonth;
+      view.listMonth = b.dataset.month; view.lastListMonth = b.dataset.month; render();
+      slideMonth($('#view-list'), was, view.listMonth);
+    }
     if (act === 'list-scope') { view.listMonth = b.dataset.scope === 'all' ? null : view.lastListMonth; render(); }
     if (act === 'clear-cat') { view.listCats = view.listCats.filter((c) => c !== (b.dataset.cat || null)); render(); }
     if (act === 'clear-source') { view.listSources = view.listSources.filter((k) => k !== b.dataset.source); render(); }
@@ -1384,6 +1428,7 @@ function bind() {
     const k = e.target.dataset?.fold;
     if (!k || !(k in view.folds)) return;
     view.folds[k] = e.target.open;
+    if (e.target.open) motion.grow(e.target);
     try { localStorage.setItem(`taler:${k}`, e.target.open ? 'auf' : 'zu'); } catch { /* egal */ }
   }, true);
 
@@ -1529,6 +1574,16 @@ function bind() {
     await saveTemplate();
   });
   for (const d of document.querySelectorAll('dialog.sheet')) bindSheet(d);
+  // Formulare mit method="dialog", die niemand abfängt (abbrechen, OK, löschen …): auch diese Sheets gleiten hinaus.
+  document.addEventListener('submit', (e) => {
+    const d = e.target.closest?.('dialog.sheet');
+    if (e.defaultPrevented || !d || e.target.getAttribute('method') !== 'dialog') return;
+    e.preventDefault();
+    closeSheet(d, e.submitter?.value ?? '');
+  });
+  // iOS zeigt :active (Knöpfe geben nach) nur, wenn irgendwo touchstart gehört wird.
+  document.addEventListener('touchstart', () => {}, { passive: true });
+  motion.watchSegs();
   $('#add-btn').addEventListener('click', () => openEditor(null));
 }
 
