@@ -34,6 +34,12 @@ function moneyHero(cents, currency) {
   }
   return `${esc(main)}<small>${esc(rest)}</small>`;
 }
+/** Text einer zählenden Zahl (data-count, data-cents, data-fmt): main.js setzt ihn Bild für Bild neu. */
+export function countText(cents, kind, currency) {
+  if (kind === 'signed') return `${cents < 0 ? '−' : '+'}${moneyHero(Math.abs(cents), currency)}`;
+  return kind === 'hero' ? moneyHero(cents, currency) : money(cents, currency);
+}
+const counting = (key, cents, kind) => `data-count="${esc(key)}" data-cents="${cents}" data-fmt="${kind}"`;
 /** Summe für Listen: Ausgaben ohne Vorzeichen, Erstattungen grün mit „+“ (wie die einzelnen Zahlungen). */
 const sumHtml = (cents, currency) => (cents < 0 ? `<span class="in">+${money(-cents, currency)}</span>` : money(cents, currency));
 /** "120,00 $" bzw. "120,00 $, 5,00 £" für Fremdwährung ohne Euro-Betrag. */
@@ -132,12 +138,12 @@ function balanceBlock(s, compare, cur) {
   const sub = over ? `${pct(share)} über den Einnahmen` : `${pct(share)} der Einnahmen übrig`;
   const note = over ? 'dunkel = durch Einnahmen gedeckt · rot = darüber' : 'dunkel = ausgegeben · grün = übrig';
   return `<div class="saldo">
-    <div class="kpi hero"><div class="cap">${label}</div><div class="v ${over ? 'neg' : 'pos'}">${over ? '−' : '+'}${moneyHero(Math.abs(left), cur)}</div><div class="sub">${sub}</div></div>
+    <div class="kpi hero"><div class="cap">${label}</div><div class="v ${over ? 'neg' : 'pos'}" ${counting('left', left, 'signed')}>${over ? '−' : '+'}${moneyHero(Math.abs(left), cur)}</div><div class="sub">${sub}</div></div>
     <div class="split" role="img" aria-label="${esc(`${label}: ${money(Math.abs(left), cur)}`)}"><span class="out" style="width:${Math.min(100, outPct).toFixed(1)}%"></span><span class="${over ? 'over' : 'left'}" style="flex:1"></span></div>
     <p class="barnote">${note}</p>
     <div class="kpis">
-      <button class="kpi tap" data-act="kind-list" data-kind="income"><div class="cap">einnahmen ›</div><div class="v">${money(s.incomeCents, cur)}</div><div class="sub">${s.savingCents ? `davon gespart ${money(s.savingCents, cur)}` : 'laut Kontoauszug'}</div></button>
-      <button class="kpi tap" data-act="kind-list" data-kind="expense"><div class="cap">ausgaben ›</div><div class="v">${money(s.spentCents, cur)}</div><div class="sub">${compare}</div></button>
+      <button class="kpi tap" data-act="kind-list" data-kind="income"><div class="cap">einnahmen ›</div><div class="v" ${counting('income', s.incomeCents, 'money')}>${money(s.incomeCents, cur)}</div><div class="sub">${s.savingCents ? `davon gespart ${money(s.savingCents, cur)}` : 'laut Kontoauszug'}</div></button>
+      <button class="kpi tap" data-act="kind-list" data-kind="expense"><div class="cap">ausgaben ›</div><div class="v" ${counting('expense', s.spentCents, 'money')}>${money(s.spentCents, cur)}</div><div class="sub">${compare}</div></button>
     </div>
   </div>`;
 }
@@ -188,7 +194,7 @@ export function renderOverview(el, state, view, clock, info) {
   } else {
     html += `
   <div class="kpis">
-    <div class="kpi hero"><div class="cap">erfasste ausgaben</div><div class="v">${moneyHero(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
+    <div class="kpi hero"><div class="cap">erfasste ausgaben</div><div class="v" ${counting('spent', s.spentCents, 'hero')}>${moneyHero(s.spentCents, cur)}</div><div class="sub">${compare}</div></div>
     ${s.budgetLeftCents !== null
       ? `<div class="kpi">${budgetKpi(s, budget, cur)}</div>`
       : `<div class="kpi"><div class="cap">pro tag</div><div class="v">${money(s.dailyAverageCents, cur)}</div><div class="sub">Durchschnitt</div></div>`}
@@ -324,7 +330,7 @@ function yearBlock(state, view, clock, months) {
   if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
   return `${head(`jahr ${year}`)}
   <div class="year">
-    <div class="yearhead"><span class="v">${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
+    <div class="yearhead"><span class="v" ${counting('year', y.totalCents, 'money')}>${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
     <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}">${bars}</div>
   </div>`;
 }
@@ -757,7 +763,7 @@ export function renderAccounts(el, state, view, clock) {
   const pos = Math.max(1, ['konto', 'tagesgeld', 'depot'].reduce((s, k) => s + Math.max(0, w.byType[k]), 0));
   const share = (k) => (Math.max(0, w.byType[k]) / pos * 100).toFixed(1);
   html += `<div class="saldo">
-    <div class="kpi hero"><div class="cap">mein vermögen</div><div class="v">${moneyHero(w.totalCents, cur)}</div>${notes ? `<div class="sub">${esc(notes)}</div>` : ''}</div>
+    <div class="kpi hero"><div class="cap">mein vermögen</div><div class="v" ${counting('wealth', w.totalCents, 'hero')}>${moneyHero(w.totalCents, cur)}</div>${notes ? `<div class="sub">${esc(notes)}</div>` : ''}</div>
     ${w.totalCents > 0 ? `<div class="split wealth" role="img" aria-label="Konten ${money(w.byType.konto, cur)}, Tagesgeld ${money(w.byType.tagesgeld, cur)}, Depots ${money(w.byType.depot, cur)}"><span class="t-konto" style="width:${share('konto')}%"></span><span class="t-tagesgeld" style="width:${share('tagesgeld')}%"></span><span class="t-depot" style="width:${share('depot')}%"></span></div>
     <div class="legend">${['konto', 'tagesgeld', 'depot'].map((k) => `<span><i class="t-${k}"></i>${{ konto: 'konten', tagesgeld: 'tagesgeld', depot: 'depots' }[k]} ${money(w.byType[k], cur)}</span>`).join('')}</div>` : ''}
   </div>`;
@@ -792,7 +798,7 @@ export function renderAccount(el, state, view, clock, info = {}) {
   const d = a.type === 'depot' ? depotValue(a, state.positions, state.transactions, state.accounts, cur) : null;
   const meta = [a.bank, a.main ? 'Eingangskonto' : a.name !== ACCOUNT_TYPE_LABELS[a.type] ? ACCOUNT_TYPE_LABELS[a.type] : '', a.rateBp ? `${rateText(a.rateBp)} Zinsen` : '', a.other ? 'gehört jemand anderem' : ''].filter(Boolean).join(' · ');
   let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
-  <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v">${b ? moneyHero(b.cents, cur) : '—'}</div>
+  <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v"${b ? ` ${counting(`stand-${a.id}`, b.cents, 'hero')}` : ''}>${b ? moneyHero(b.cents, cur) : '—'}</div>
     <div class="sub">${d && d.costCents ? `<span class="${d.gainCents >= 0 ? 'gain' : 'loss'}">${signed(d.gainCents, cur)} (${gainPct(d.gainCents, d.costCents).replace(/<[^>]+>/g, '')})</span> seit Kauf · ` : ''}${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
   if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info);
   const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
