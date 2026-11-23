@@ -1,7 +1,7 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
 import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks,
 } from './logic.js';
 import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
@@ -62,6 +62,14 @@ export function dayLabel(date, today, yesterday) {
   return `${WEEKDAYS[weekday(date)]}, ${Number(date.slice(8, 10))}. ${MONTHS[Number(date.slice(5, 7)) - 1]}`;
 }
 /** "heute", "gestern", "vor 3 tagen" – klein, für Sätze. */
+/** „23.11.2026, 14:05“ aus einem ISO-Zeitstempel, in der Zeit des Geräts. */
+export function dateTimeLabel(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}, ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export function sinceLabel(date, today) {
   const n = daysBetween(date, today);
   if (n <= 0) return 'heute';
@@ -113,11 +121,16 @@ function statementRow() {
   return `<li><label class="item action" for="statement-file"><span class="t"><b>Kontoauszug einlesen</b><span>PDF von Trade Republic oder ING · bleibt auf dem Gerät</span></span><span class="chev" aria-hidden="true">›</span></label></li>`;
 }
 
-/** Sicherung fällig? Ab 20 eigenen Buchungen und wenn die letzte Sicherung über 30 Tage her ist. */
+/**
+ * Sicherung fällig? Ab 20 eigenen Buchungen: wenn es noch keine gibt, nach 30 Änderungen seit der letzten
+ * (z. B. eingeordnete Zahlungen, neue Position) oder wenn die letzte über 30 Tage her ist und sich seitdem etwas geändert hat.
+ */
 export function backupDue(state, info, today) {
   const own = state.transactions.filter((t) => t.source !== 'demo').length;
   if (own < 20) return false;
-  return !info.lastBackup || daysBetween(String(info.lastBackup).slice(0, 10), today) > 30;
+  if (!info.lastBackup) return true;
+  const changes = info.changes || 0;
+  return changes >= 30 || (changes > 0 && daysBetween(String(info.lastBackup).slice(0, 10), today) > 30);
 }
 const backupLabel = (info, today) => (info.lastBackup ? `letzte ${sinceLabel(String(info.lastBackup).slice(0, 10), today)}` : 'noch nie gesichert');
 
@@ -157,6 +170,7 @@ export function renderOverview(el, state, view, clock, info) {
   const idx = months.indexOf(view.month);
   const uncategorized = s.byCategory.find((c) => c.categoryId === null);
   const open = state.transactions.filter(needsCategory).length;
+  const asks = openTransferAsks(state.transferAsk, state.transactions).length;
   const demoCount = state.transactions.filter((t) => t.source === 'demo').length;
 
   let html = `
@@ -214,7 +228,7 @@ export function renderOverview(el, state, view, clock, info) {
   // Was zu tun ist: einordnen, aufräumen. Petrol nur hier. Einlesen und Sichern stehen unter Einstellungen.
   let todo = '';
   if (open) {
-    todo += item({ tag: 'button', cls: 'open', attrs: 'data-act="sort"', title: `${plural(open, 'Zahlung', 'Zahlungen')} einordnen`, sub: 'ohne Kategorie · ein Tipp pro Zahlung', chev: true });
+    todo += item({ tag: 'button', cls: 'open', attrs: 'data-act="sort"', title: `${plural(open, 'Zahlung', 'Zahlungen')} einordnen`, sub: asks ? `ohne Kategorie · ${plural(asks, 'mögliche Umbuchung', 'mögliche Umbuchungen')}` : 'ohne Kategorie · ein Tipp pro Zahlung', chev: true });
   }
   if (demoCount) {
     todo += item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true });
@@ -597,6 +611,7 @@ export function renderSettings(el, state, view, info, clock) {
     ${item({ tag: 'button', cls: backupDue(state, info, clock.today) ? 'open' : '', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, n: 'json' })}
     ${item({ tag: 'button', attrs: 'data-act="export-csv"', title: 'Tabelle für Numbers oder Excel', n: 'csv' })}
     <li><label class="item" for="backup-file"><span class="t"><b>Sicherung laden</b><span>ersetzt den aktuellen Stand</span></span><span class="chev" aria-hidden="true">›</span></label></li>
+    ${info.previous ? item({ tag: 'button', attrs: 'data-act="restore-previous"', title: 'Vorherigen Stand zurückholen', sub: `vor „${esc(info.previous.label)}“ am ${esc(dateTimeLabel(info.previous.at))}`, chev: true }) : ''}
   </ul>
   ${info.standalone ? '' : standaloneNote()}
 
@@ -635,6 +650,24 @@ export function renderRules(el, state) {
 export function renderSorter(el, state, s, clock) {
   const last = s.history[s.history.length - 1];
   const undo = last ? `<button class="textbtn undo" data-sort="undo">rückgängig: ${esc(last.text)}${s.history.length > 1 ? ` <span class="muted">(${s.history.length} schritte)</span>` : ''}</button>` : '';
+  if (s.pair) {
+    const side = (t) => `<div class="pairside">
+      <div class="sortmerchant">${esc(t.merchant || 'Ohne Händler')}</div>
+      <div class="pairamount${t.amountCents < 0 ? ' in' : ''}">${t.amountCents < 0 ? '+' : '−'}${money(Math.abs(t.amountCents), t.currency)}</div>
+      <div class="muted small">${esc([dayLabel(t.date, clock.today, clock.yesterday), t.date.slice(0, 4) !== clock.today.slice(0, 4) ? t.date.slice(0, 4) : '', t.card].filter(Boolean).join(' · '))}</div>
+    </div>`;
+    el.innerHTML = `
+    <div class="sheethead"><h2 id="sort-title" class="cap">einordnen · ${s.pos} von ${s.total}</h2><button class="iconbtn" data-sort="close" aria-label="Schließen">${ICON.close}</button></div>
+    <div class="sortcard">
+      <div class="cap">umbuchung zwischen deinen konten?</div>
+      ${side(s.pair[0])}${side(s.pair[1])}
+      <p class="muted small">Gleicher Betrag geht auf einem Konto raus und auf einem anderen rein. Ist das nur Geld zwischen deinen Konten, zählt es nirgends. Sonst ordnest du beide einzeln ein, z. B. Konzertkarte und Geld zurück von einer Freundin.</p>
+    </div>
+    <div class="actions"><button class="btn primary" data-sort="pair-yes">ja, umbuchung</button><button class="btn" data-sort="pair-no">nein, einzeln einordnen</button></div>
+    ${undo}
+    <div class="actions sticky"><button class="btn" data-sort="skip">überspringen</button><button class="btn" data-sort="close">später</button></div>`;
+    return;
+  }
   if (!s.t) {
     el.innerHTML = `
     <div class="sheethead"><h2 id="sort-title">einordnen</h2><button class="iconbtn" data-sort="close" aria-label="Schließen">${ICON.close}</button></div>

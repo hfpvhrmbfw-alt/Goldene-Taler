@@ -607,13 +607,13 @@ const accountOf = (t) => String(t.card || '').trim().split(/\s+/)[0].toLowerCase
  * Umbuchungen zwischen eigenen Konten: Auf einem Konto geht Geld raus, auf einem anderen kommt derselbe Betrag
  * höchstens sieben Tage früher oder später rein (Lastschriften bucht die Bank oft erst nach dem Wochenende ab).
  * Gepaart werden Buchungen aus Kontoauszügen und Kurzbefehl von verschiedenen Konten, je Buchung höchstens ein Partner,
- * das nächste Datum gewinnt. Beide Seiten werden Umbuchungen.
- * Bereits bekannte Buchungen kommen nur als Partner infrage, nicht neu in `incoming`.
+ * das nächste Datum gewinnt. Bereits bekannte Buchungen kommen nur als Partner infrage, nicht neu in `incoming`.
+ * Ob ein Paar wirklich eine Umbuchung ist, entscheidet `classifyTransfers` (gleicher Betrag allein reicht nicht).
  * @param {import('./model.js').Transaction[]} existing
  * @param {import('./model.js').Transaction[]} incoming  neue Buchungen
- * @returns {Set<string>} IDs aus existing und incoming, die Umbuchungen sind
+ * @returns {[import('./model.js').Transaction, import('./model.js').Transaction][]}
  */
-export function findTransfers(existing, incoming) {
+export function findTransferPairs(existing, incoming) {
   const open = (t) => (t.source === 'statement' || t.source === 'shortcut') && !t.excluded && (kindOf(t) === 'expense' || kindOf(t) === 'income');
   const pool = [...existing.filter(open), ...incoming.filter(open)];
   const fresh = new Set(incoming.map((t) => t.id));
@@ -627,12 +627,18 @@ export function findTransfers(existing, incoming) {
     }
   }
   const used = new Set();
-  const hits = new Set();
+  const out = [];
   for (const { a, b } of pairs.sort((x, y) => x.d - y.d)) {
     if (used.has(a.id) || used.has(b.id)) continue;
-    used.add(a.id); used.add(b.id); hits.add(a.id); hits.add(b.id);
+    used.add(a.id); used.add(b.id);
+    out.push(a.amountCents > 0 ? [a, b] : [b, a]);
   }
-  return hits;
+  return out;
+}
+
+/** IDs aller gepaarten Buchungen (beide Seiten). */
+export function findTransfers(existing, incoming) {
+  return new Set(findTransferPairs(existing, incoming).flat().map((t) => t.id));
 }
 
 const squash = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
@@ -656,11 +662,56 @@ export function isOwnAccountMove(t, accounts) {
   return accounts.some((a) => !wordIn(t.card, a) && wordIn(t.merchant, a));
 }
 
-/** Alle Buchungen, die Umbuchungen sein sollten (eigenes Konto genannt oder Gegenstück gefunden). Für den einmaligen Durchlauf über den Bestand. */
-export function transfersIn(transactions, accounts) {
-  const hits = findTransfers([], transactions);
-  for (const t of transactions) if (isOwnAccountMove(t, accounts)) hits.add(t.id);
-  return hits;
+/**
+ * Umbuchungen in neuen Buchungen: sicher ist eine, die ein eigenes Konto als Gegenseite nennt, und ihr Gegenstück.
+ * Ein Paar nur aus gleichem Betrag (z. B. Konzertkarte bezahlt, Freundin überweist das Geld zurück) ist unsicher
+ * und kommt als Frage (`ask`, Ausgabe zuerst), bis jemand es bestätigt.
+ * @param {import('./model.js').Transaction[]} existing
+ * @param {import('./model.js').Transaction[]} incoming
+ * @param {string[]} names  eigene Konten (Namen, IBANs)
+ * @returns {{sure: Set<string>, ask: [string, string][]}}
+ */
+export function classifyTransfers(existing, incoming, names) {
+  const named = (t) => isOwnAccountMove(t, names);
+  const sure = new Set(incoming.filter(named).map((t) => t.id));
+  const ask = [];
+  for (const [a, b] of findTransferPairs(existing, incoming)) {
+    if (named(a) || named(b)) { sure.add(a.id); sure.add(b.id); } else ask.push([a.id, b.id]);
+  }
+  return { sure, ask };
+}
+
+/** Der ganze Bestand auf einmal, für den einmaligen Durchlauf beim ersten Start. */
+export const transfersIn = (transactions, names) => classifyTransfers([], transactions, names);
+
+/** Art einer Buchung, bevor sie Umbuchung wurde: Kurzbefehl-Zeilen sind Ausgaben (minus = Erstattung), im Auszug entscheidet das Vorzeichen. */
+export const kindBeforeTransfer = (t) => (t.amountCents > 0 || t.source === 'shortcut' ? 'expense' : 'income');
+
+/**
+ * Einmalig: Umbuchungen, die früher nur am gleichen Betrag erkannt wurden, wieder zur Frage machen.
+ * Von Hand gesetzte Gegenkonten und Buchungen, die ein eigenes Konto nennen, bleiben Umbuchungen.
+ * @returns {{revert: import('./model.js').Transaction[], ask: [string, string][]}}  revert = Buchungen mit alter Art zurück
+ */
+export function recheckTransfers(transactions, names) {
+  const back = transactions
+    .filter((t) => kindOf(t) === 'transfer' && !t.toAccountId && !t.excluded && (t.source === 'statement' || t.source === 'shortcut'))
+    .map((t) => ({ ...t, kind: kindBeforeTransfer(t) }));
+  const named = (t) => isOwnAccountMove(t, names);
+  const revert = [];
+  const ask = [];
+  for (const [a, b] of findTransferPairs([], back)) {
+    if (named(a) || named(b)) continue;
+    revert.push(a, b);
+    ask.push([a.id, b.id]);
+  }
+  return { revert, ask };
+}
+
+/** Offene Fragen „Umbuchung?“: nur Paare, deren beide Buchungen noch da, noch nicht eingeordnet und weder Umbuchung noch ausgenommen sind. */
+export function openTransferAsks(asks, transactions) {
+  const byId = new Map(transactions.map((t) => [t.id, t]));
+  const ok = (t) => t && !t.excluded && !t.categoryId && (kindOf(t) === 'expense' || kindOf(t) === 'income');
+  return (asks || []).filter(([a, b]) => ok(byId.get(a)) && ok(byId.get(b)));
 }
 
 /**

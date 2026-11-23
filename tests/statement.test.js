@@ -156,7 +156,46 @@ test('transfersIn: Bestand nachträglich prüfen', () => {
     stmt('b', '2026-11-02', 3000, 'ING'), stmt('c', '2026-11-05', -3000, 'Trade Republic'),
     stmt('d', '2026-11-05', 999, 'ING'),
   ];
-  assert.deepEqual([...L.transfersIn(list, ['Trade Republic'])].sort(), ['a', 'b', 'c']);
+  const r = L.transfersIn(list, ['Trade Republic']);
+  assert.deepEqual([...r.sure], ['a']);
+  assert.deepEqual(r.ask, [['b', 'c']]);
+});
+
+test('classifyTransfers: gleicher Betrag allein ist nur eine Frage, mit eigenem Konto sicher', () => {
+  const names = ['Trade Republic', 'ING'];
+  // Konzertkarte mit TR bezahlt, Freundin überweist 50 € aufs ING-Konto zurück
+  const card = { ...stmt('k', '2026-11-03', 5000, 'Trade Republic'), source: 'shortcut', merchant: 'Eventim' };
+  const back = { ...stmt('f', '2026-11-06', -5000, 'ING', 'income'), merchant: 'Lisa Muster Konzert' };
+  assert.deepEqual(L.classifyTransfers([card], [back], names), { sure: new Set(), ask: [['k', 'f']] });
+  // ING nennt Trade Republic: beide Seiten sicher
+  const out = { ...stmt('o', '2026-11-01', 20000, 'ING'), merchant: 'Trade Republic Bank GmbH' };
+  const inn = { ...stmt('i', '2026-11-02', -20000, 'Trade Republic', 'income'), merchant: 'Einzahlung' };
+  const r = L.classifyTransfers([out], [inn], names);
+  assert.deepEqual([...r.sure].sort(), ['i', 'o']);
+  assert.deepEqual(r.ask, []);
+});
+
+test('recheckTransfers: alte Paare nur aus gleichem Betrag werden wieder Fragen', () => {
+  const names = ['Trade Republic', 'ING'];
+  const list = [
+    { ...stmt('k', '2026-11-03', 5000, 'Trade Republic', 'transfer'), source: 'shortcut', merchant: 'Eventim' },
+    { ...stmt('f', '2026-11-06', -5000, 'ING', 'transfer'), merchant: 'Lisa Muster' },
+    { ...stmt('o', '2026-11-01', 20000, 'ING', 'transfer'), merchant: 'Trade Republic' },
+    { ...stmt('i', '2026-11-02', -20000, 'Trade Republic', 'transfer'), merchant: 'Einzahlung' },
+    { ...stmt('h', '2026-11-04', 7000, 'ING', 'transfer'), merchant: 'Von Hand', toAccountId: 'x' },
+  ];
+  const r = L.recheckTransfers(list, names);
+  assert.deepEqual(r.ask, [['k', 'f']]);
+  assert.deepEqual(r.revert.map((t) => [t.id, t.kind]), [['k', 'expense'], ['f', 'income']]);
+});
+
+test('openTransferAsks: Paar fällt weg, sobald eine Seite eingeordnet, gelöscht oder Umbuchung ist', () => {
+  const a = stmt('a', '2026-11-01', 5000, 'ING');
+  const b = stmt('b', '2026-11-02', -5000, 'Trade Republic', 'income');
+  assert.equal(L.openTransferAsks([['a', 'b']], [a, b]).length, 1);
+  assert.equal(L.openTransferAsks([['a', 'b']], [a]).length, 0);
+  assert.equal(L.openTransferAsks([['a', 'b']], [{ ...a, categoryId: 'freizeit' }, b]).length, 0);
+  assert.equal(L.openTransferAsks([['a', 'b']], [{ ...a, kind: 'transfer' }, b]).length, 0);
 });
 
 test('Stand am Ende des Auszugs: Saldo nach der letzten Zeile (TR), „Neuer Saldo“ (ING)', () => {

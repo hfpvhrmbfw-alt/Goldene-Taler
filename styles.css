@@ -362,6 +362,10 @@ dialog.sheet.closing::backdrop { animation:fade-out .22s ease-in forwards; }
 .sortcard { padding:var(--s3) 0 var(--s4); border-bottom:1px solid var(--line); margin-bottom:var(--s4); }
 .sortmerchant { font:var(--title-weight) calc(22*var(--u))/1.2 var(--font-title); overflow-wrap:anywhere; }
 .sortamount { font:var(--title-weight) calc(28*var(--u))/1.2 var(--font-title); font-variant-numeric:tabular-nums; margin:var(--s1) 0; }
+.pairside { padding:var(--s3) 0; }
+.pairside + .pairside { border-top:1px solid var(--line); }
+.pairamount { font:var(--title-weight) calc(22*var(--u))/1.2 var(--font-title); font-variant-numeric:tabular-nums; margin:var(--s1) 0; }
+.pairamount.in { color:var(--ok); }
 .catgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(104px, 1fr)); gap:var(--s2); margin-bottom:var(--s4); }
 .catbtn { min-height:var(--tap); padding:6px var(--s2); hyphens:auto; border:1px solid var(--line); background:var(--surface); color:var(--ink); border-radius:var(--r-control); font:500 calc(15*var(--u))/1.2 var(--font-body); text-align:left; cursor:pointer; }
 .catbtn:active { border-color:var(--accent); background:var(--accent-tint); color:var(--accent-text); }

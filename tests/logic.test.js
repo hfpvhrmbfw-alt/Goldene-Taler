@@ -534,3 +534,24 @@ test('sanitizeSettings: eigene Konten, vorbelegt mit Trade Republic und ING', ()
   assert.deepEqual(M.sanitizeSettings({}).ownAccounts, ['Trade Republic', 'ING']);
   assert.deepEqual(M.sanitizeSettings({ ownAccounts: [' Tagesgeld ', 'Tagesgeld', '', 3] }).ownAccounts, ['Tagesgeld']);
 });
+
+test('Sicherung: offene Fragen „Umbuchung?“ gehen mit, kaputte Einträge fallen weg', () => {
+  const state = { transactions: [], rules: [], settings: M.DEFAULT_SETTINGS, deletedIds: [], categories: [], accounts: [], positions: [], transferAsk: [['a', 'b']] };
+  const r = M.parseImport(JSON.stringify(M.buildExport(state, '2026-11-23T12:00:00Z')));
+  assert.deepEqual(r.transferAsk, [['a', 'b']]);
+  assert.deepEqual(M.sanitizeTransferAsk([['a'], ['a', 2], 'x', ['c', 'd']]), [['c', 'd']]);
+  // ältere Sicherung ohne das Feld
+  assert.deepEqual(M.parseImport(JSON.stringify({ app: 'taler', version: 1, transactions: [] })).transferAsk, []);
+});
+
+test('backupDue: nie gesichert, viele Änderungen oder alt und geändert', async () => {
+  const { backupDue } = await import('../src/ui.js');
+  const tx = Array.from({ length: 25 }, (_, i) => ({ id: `t${i}`, source: 'shortcut' }));
+  const st = { transactions: tx };
+  assert.equal(backupDue({ transactions: tx.slice(0, 10) }, { lastBackup: null }, '2026-11-23'), false);
+  assert.equal(backupDue(st, { lastBackup: null }, '2026-11-23'), true);
+  assert.equal(backupDue(st, { lastBackup: '2026-11-20', changes: 5 }, '2026-11-23'), false);
+  assert.equal(backupDue(st, { lastBackup: '2026-11-20', changes: 30 }, '2026-11-23'), true);
+  assert.equal(backupDue(st, { lastBackup: '2026-10-01', changes: 0 }, '2026-11-23'), false);
+  assert.equal(backupDue(st, { lastBackup: '2026-10-01', changes: 1 }, '2026-11-23'), true);
+});

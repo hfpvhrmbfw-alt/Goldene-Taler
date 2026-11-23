@@ -1,13 +1,13 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
 import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
-  categoryKind, mergeCategory, isOwnAccountMove, transfersIn,
+  categoryKind, mergeCategory, isOwnAccountMove, transfersIn, classifyTransfers, recheckTransfers, openTransferAsks, daysBetween,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind, coinUrl, pickCoinQuotes, coinsToFetch, COIN_NAMES } from './prices.js';
@@ -29,7 +29,7 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [] };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [] };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
@@ -40,7 +40,9 @@ const view = {
 for (const k of Object.keys(view.folds)) {
   try { view.folds[k] = localStorage.getItem(`taler:${k}`) !== 'zu'; } catch { /* egal */ }
 }
-const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false, priceKey: null, priceFetch: null, fetchingPrices: false, coinFetchAt: 0 };
+const info = { lastImport: null, lastBackup: null, reviewDismissed: null, standalone: false, priceKey: null, priceFetch: null, fetchingPrices: false, coinFetchAt: 0, changes: 0, backupAsked: null, previous: null };
+/** Stand der einmaligen Umbuchungs-Durchläufe: 1 = erster Durchlauf, 2 = Paare nur aus gleichem Betrag wieder als Frage. */
+const TRANSFER_SCAN = 2;
 
 // ---------- Speichern ----------
 /** Kategorienliste setzen: Zustand und Oberfläche kennen dieselbe Liste. */
@@ -48,6 +50,7 @@ function setCategories(list) { state.categories = list; ui.setCategories(list); 
 async function saveCategories() { await db.setMeta('categories', state.categories); }
 async function saveAccounts() { await db.setMeta('accounts', state.accounts); }
 async function savePositions() { await db.setMeta('positions', state.positions); }
+async function saveAsks() { await db.setMeta('transferAsk', state.transferAsk); }
 const newAccountId = (i = 0) => `a-${Date.now().toString(36)}${i ? `-${i}` : ''}`;
 /** Alle Namen, an denen Taler eigene Konten erkennt (Konten und weitere Namen aus den Einstellungen). */
 const own = () => ownNames(state.settings, state.accounts);
@@ -68,7 +71,7 @@ async function reapplyRules() {
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions, transferAsk: state.transferAsk });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -86,6 +89,7 @@ async function restore(snap) {
   await saveCategories();
   await saveAccounts();
   await savePositions();
+  await saveAsks();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -254,9 +258,36 @@ async function saveBackup() {
   const ok = await saveFile(`taler-sicherung-${c.today}.json`, JSON.stringify(buildExport(state, c.iso), null, 2), 'application/json');
   if (!ok) return;
   info.lastBackup = c.today;
+  info.changes = 0;
   await db.setMeta('lastBackup', info.lastBackup);
+  await db.setMeta('changes', 0);
   render();
   toast('Sicherung gespeichert');
+}
+
+/**
+ * Änderungen seit der letzten Sicherung zählen: jede gespeicherte oder gelöschte Buchung oder Regel zählt eins,
+ * ebenso jedes Speichern von Einstellungen, Kategorien, Konten und Depot-Positionen.
+ */
+function countChanges(store) {
+  const setMeta = store.setMeta;
+  const bump = (n) => { info.changes += n; return setMeta('changes', info.changes); };
+  const wrap = (name, n) => { const f = store[name]; store[name] = async (x) => { await f(x); await bump(n(x)); }; };
+  wrap('putTransactions', (list) => list.length);
+  wrap('putRules', (list) => list.length);
+  wrap('deleteTransaction', () => 1);
+  wrap('deleteRule', () => 1);
+  const counted = new Set(['settings', 'categories', 'accounts', 'positions']);
+  store.setMeta = async (k, v) => { await setMeta(k, v); if (counted.has(k)) await bump(1); };
+}
+
+/** Ist eine Sicherung fällig, einmal am Tag mit „jetzt sichern“ daran erinnern (der Punkt am Reiter bleibt). */
+async function askBackup() {
+  const c = clock();
+  if (!ui.backupDue(state, info, c.today) || info.backupAsked === c.today) return;
+  info.backupAsked = c.today;
+  await db.setMeta('backupAsked', c.today);
+  toast(info.lastBackup ? `Seit der letzten Sicherung ${info.changes} Änderungen` : 'Noch keine Sicherung von Taler', { label: 'jetzt sichern', run: saveBackup });
 }
 
 // ---------- Import ----------
@@ -276,24 +307,48 @@ const toTransfer = (t) => ({ ...t, kind: 'transfer', categoryId: null, manualCat
 function markTransfers(rows) {
   const known = new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]);
   const fresh = rows.filter((t) => !known.has(t.id));
-  const marks = findTransfers(state.transactions, fresh);
-  for (const t of fresh) if (isOwnAccountMove(t, own())) marks.add(t.id);
+  // Buchungen, zu denen schon eine Frage offen ist, bekommen keinen zweiten Partner.
+  const asked = new Set(openTransferAsks(state.transferAsk, state.transactions).flat());
+  const { sure, ask } = classifyTransfers(state.transactions.filter((t) => !asked.has(t.id)), fresh, own());
   return {
-    incoming: rows.map((t) => (marks.has(t.id) ? { ...t, kind: 'transfer' } : t)),
-    changed: state.transactions.filter((t) => marks.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer),
+    incoming: rows.map((t) => (sure.has(t.id) ? { ...t, kind: 'transfer' } : t)),
+    changed: state.transactions.filter((t) => sure.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer),
+    ask,
   };
 }
 
-/** Vorhandene Buchungen, die ein eigenes Konto nennen (oder ein Gegenstück haben), zu Umbuchungen machen. */
+/** Neue Fragen „Umbuchung?“ merken (nur solche, deren Buchungen wirklich da sind). */
+async function addAsks(ask) {
+  if (!ask.length) return 0;
+  state.transferAsk = openTransferAsks([...state.transferAsk, ...ask], state.transactions);
+  await saveAsks();
+  return ask.length;
+}
+
+/**
+ * Vorhandene Buchungen, die ein eigenes Konto nennen, zu Umbuchungen machen. Mit `pairs` auch ihre Gegenstücke;
+ * Paare nur aus gleichem Betrag werden Fragen im Einordnen. Ergebnis: umgestellte Buchungen und neue Fragen.
+ */
 async function applyTransfers({ pairs = false } = {}) {
-  const hits = pairs ? transfersIn(state.transactions, own())
-    : new Set(state.transactions.filter((t) => isOwnAccountMove(t, own())).map((t) => t.id));
+  const { sure: hits, ask } = pairs ? transfersIn(state.transactions, own())
+    : { sure: new Set(state.transactions.filter((t) => isOwnAccountMove(t, own())).map((t) => t.id)), ask: [] };
   const changed = state.transactions.filter((t) => hits.has(t.id) && kindOf(t) !== 'transfer').map(toTransfer);
-  if (!changed.length) return 0;
-  const byId = new Map(changed.map((t) => [t.id, t]));
+  if (changed.length) {
+    const byId = new Map(changed.map((t) => [t.id, t]));
+    state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
+    await saveTransactions(changed);
+  }
+  return { n: changed.length, asked: await addAsks(ask) };
+}
+
+/** Einmalig (Durchlauf 2): Umbuchungs-Paare, die nur am gleichen Betrag erkannt wurden, werden wieder Ausgabe und Einnahme mit offener Frage. */
+async function recheckOldTransfers() {
+  const { revert, ask } = recheckTransfers(state.transactions, own());
+  if (!revert.length) return 0;
+  const byId = new Map(revert.map((t) => [t.id, t]));
   state.transactions = state.transactions.map((t) => byId.get(t.id) || t);
-  await saveTransactions(changed);
-  return changed.length;
+  await saveTransactions(revert);
+  return addAsks(ask);
 }
 
 async function importLog(text, { demo = false } = {}) {
@@ -304,13 +359,15 @@ async function importLog(text, { demo = false } = {}) {
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
   else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
   let changed = [];
-  if (!demo) ({ incoming, changed } = markTransfers(incoming));
+  let ask = [];
+  if (!demo) ({ incoming, changed, ask } = markTransfers(incoming));
   const byId = new Map(changed.map((t) => [t.id, t]));
   const categorized = applyRules(incoming, state.rules, state.categories);
   const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), categorized, state.deletedIds);
   state.transactions = merged;
   if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
+  await addAsks(ask);
   if (demo) {
     view.importReport = '';
   } else {
@@ -342,12 +399,13 @@ async function importStatement(file) {
   const snap = snapshot();
   const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
   // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
-  const { incoming, changed } = markTransfers(rows);
+  const { incoming, changed, ask } = markTransfers(rows);
   const byId = new Map(changed.map((t) => [t.id, t]));
   const { transactions: merged, added } = mergeTransactions(state.transactions.map((t) => byId.get(t.id) || t), applyRules(incoming, state.rules, state.categories), state.deletedIds);
   state.transactions = merged;
   if (changed.length) await saveTransactions(changed);
   if (added.length) await saveTransactions(added);
+  await addAsks(ask);
   const kinds = { expense: 0, income: 0, saving: 0, transfer: changed.length };
   for (const t of added) kinds[kindOf(t)] += 1;
   // Stand des Kontos aus dem Auszug; gibt es das Konto noch nicht, legt Taler es nach der Vorlage an.
@@ -378,10 +436,18 @@ async function removeDemo() {
   undoable(`${demo.length} Beispielbuchungen entfernt`, snap);
 }
 
-async function restoreBackup(text) {
-  const r = parseImport(text);
-  if (!r.ok) { await ask(IMPORT_ERRORS[r.error], 'OK', { cancel: false }); return; }
-  if (!(await ask(`Sicherung mit ${r.transactions.length} Buchungen laden? Der aktuelle Stand wird ersetzt.`, 'Laden'))) return;
+/**
+ * Speicher komplett durch einen anderen Stand ersetzen (Sicherung laden, alles löschen, vorherigen Stand zurückholen).
+ * Der Stand davor bleibt als „vorheriger Stand“ im Speicher und lässt sich in den Einstellungen zurückholen.
+ * Erkennt keine Umbuchungen neu: Was in der Sicherung steht, gilt, auch von Hand zurückgestellte Buchungen.
+ * @param {{transactions: object[], rules: object[], settings: object, deletedIds: string[], categories: object[]|null,
+ *   accounts: object[]|null, positions: object[], transferAsk: [string, string][]}} r  geprüft (parseImport)
+ * @param {string} label  wodurch der jetzige Stand ersetzt wird, für die Zeile in den Einstellungen
+ * @param {{priceKey?: string|null}} keep  Kurs-Schlüssel (steht nicht in Sicherungen)
+ */
+async function replaceAll(r, label, keep = {}) {
+  const c = clock();
+  const previous = { at: c.iso, label, json: JSON.stringify(buildExport(state, c.iso)), priceKey: info.priceKey };
   await db.clear();
   state.transactions = sortTransactions(r.transactions);
   state.rules = orderRules(r.rules.length ? r.rules : DEFAULT_RULES);
@@ -390,20 +456,51 @@ async function restoreBackup(text) {
   setCategories(withDefaults(r.categories || []));
   state.accounts = r.accounts || [];
   state.positions = r.positions;
+  state.transferAsk = openTransferAsks(r.transferAsk, state.transactions);
   view.budgetShow = null;
+  if ('priceKey' in keep) { info.priceKey = keep.priceKey; info.priceFetch = null; }
   await saveTransactions(state.transactions);
   await saveRules();
   await saveCategories();
   await saveAccounts();
   await savePositions();
+  await saveAsks();
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
-  if (info.lastImport) await db.setMeta('lastImport', info.lastImport);
-  if (info.lastBackup) await db.setMeta('lastBackup', info.lastBackup);
-  const n = await applyTransfers({ pairs: true });
+  await db.setMeta('transferScan', TRANSFER_SCAN);
+  for (const k of ['lastImport', 'lastBackup', 'reviewDismissed', 'priceKey', 'priceFetch']) if (info[k]) await db.setMeta(k, info[k]);
+  await db.setMeta('previous', previous);
+  info.previous = { at: previous.at, label };
+  sorter.skipped = new Set();
+}
+
+/** „rückgängig“ nach dem Ersetzen: holt den vorherigen Stand zurück. */
+function undoReplace(msg) {
+  toast(msg, { label: 'rückgängig', run: () => restorePrevious({ confirm: false }) });
+}
+
+async function restoreBackup(text) {
+  const r = parseImport(text);
+  if (!r.ok) { await ask(IMPORT_ERRORS[r.error], 'OK', { cancel: false }); return; }
+  if (!(await ask(`Sicherung mit ${r.transactions.length} Buchungen laden? Der jetzige Stand wird ersetzt, bleibt aber als „vorheriger Stand“ in den Einstellungen und lässt sich zurückholen.`, 'Laden'))) return;
+  await replaceAll(r, 'Sicherung geladen');
+  // Der Stand ist jetzt genau der aus der Sicherung: nichts Neues zu sichern.
+  info.changes = 0;
+  await db.setMeta('changes', 0);
   render();
-  toast(`${r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen'}${n ? `, ${n} Umbuchungen erkannt` : ''}`);
+  undoReplace(r.skipped ? `Geladen, ${r.skipped} fehlerhafte Einträge übersprungen` : 'Sicherung geladen');
+}
+
+/** Den Stand vor dem letzten Laden oder Löschen zurückholen. Der jetzige wird dabei selbst zum vorherigen. */
+async function restorePrevious({ confirm = true } = {}) {
+  const p = await db.getMeta('previous');
+  const r = p ? parseImport(p.json) : null;
+  if (!r?.ok) { info.previous = null; render(); return; }
+  if (confirm && !(await ask(`Stand vom ${ui.dateTimeLabel(p.at)} mit ${r.transactions.length} Buchungen zurückholen? Der jetzige Stand wird dafür zum vorherigen.`, 'Zurückholen'))) return;
+  await replaceAll(r, 'vorheriger Stand zurückgeholt', { priceKey: p.priceKey || null });
+  render();
+  toast('Vorheriger Stand zurückgeholt');
 }
 
 function demoLog() {
@@ -583,12 +680,12 @@ async function saveEditor() {
   if (toAcc && !$('#own-offer').hidden && f.makeOwn.checked && ownName) {
     state.accounts = state.accounts.map((a) => (a.id === toAcc.id ? sanitizeAccount({ ...a, match: [...a.match, ownName] }) : a));
     await saveAccounts();
-    const n = await applyTransfers();
+    const { n } = await applyTransfers();
     undoable(`„${ownName}“ gehört jetzt zu ${ui.accountLabel(toAcc)}${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
   } else if (kind === 'transfer' && !$('#own-offer').hidden && f.makeOwn.checked && ownName) {
     state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, ownName] });
     await db.setMeta('settings', state.settings);
-    const n = await applyTransfers();
+    const { n } = await applyTransfers();
     undoable(`„${ownName}“ ist jetzt ein eigenes Konto${n ? `, ${n} weitere Umbuchungen` : ''}`, snap);
   } else if (!$('#rule-offer').hidden && f.makeRule.checked && f.rulePattern.value.trim() && cat) {
     const { rules, rule } = upsertRule(state.rules, f.rulePattern.value, cat, `u-${Date.now().toString(36)}`);
@@ -625,20 +722,52 @@ async function deleteEditing() {
 // history: Stapel der Schritte (neuester zuletzt), jeder mit Schnappschuss davor. order: Knopf-Reihenfolge, fest solange das Blatt offen ist.
 const sorter = { total: 0, skipped: new Set(), history: [], order: { expense: [], income: [] } };
 
-/** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol). */
+/** Offene Fragen „Umbuchung?“, die in dieser Sitzung nicht übersprungen wurden. Sie kommen vor den einzelnen Zahlungen. */
+function pairQueue() {
+  return openTransferAsks(state.transferAsk, state.transactions).filter(([a]) => !sorter.skipped.has(a));
+}
+
+/** Alle Zahlungen ohne Kategorie, über alle Monate, neueste zuerst (dieselbe Zahl wie am App-Symbol), ohne die mit offener Frage. */
 function sortQueue() {
+  const asked = new Set(openTransferAsks(state.transferAsk, state.transactions).flat());
   return sortTransactions(state.transactions)
-    .filter((t) => needsCategory(t) && !sorter.skipped.has(t.id));
+    .filter((t) => needsCategory(t) && !sorter.skipped.has(t.id) && !asked.has(t.id));
 }
 
 function renderSorter() {
+  const pairs = pairQueue();
   const q = sortQueue();
-  const t = q[0] || null;
+  const byId = new Map(state.transactions.map((x) => [x.id, x]));
+  const pair = pairs[0] ? pairs[0].map((id) => byId.get(id)) : null;
+  const t = pair ? null : q[0] || null;
+  const left = pairs.length + q.length;
   ui.renderSorter($('#sort-body'), state, {
-    t, pos: Math.min(sorter.total, Math.max(1, sorter.total - q.length + 1)), total: sorter.total,
+    t, pair, pos: Math.min(sorter.total, Math.max(1, sorter.total - left + 1)), total: sorter.total,
     pattern: t ? suggestPattern(t.merchant) : '', history: sorter.history,
     cats: sorterCats(t && kindOf(t) === 'income' ? 'income' : 'expense'),
   }, clock());
+}
+
+/** Antwort auf „Umbuchung?“: ja = beide zählen nicht mehr; nein = beide werden einzeln eingeordnet. */
+async function answerPair(yes) {
+  const pair = pairQueue()[0];
+  if (!pair) return;
+  const snap = snapshot();
+  const [a, b] = pair.map((id) => state.transactions.find((x) => x.id === id));
+  state.transferAsk = state.transferAsk.filter(([x, y]) => !(x === pair[0] && y === pair[1]));
+  if (yes) {
+    const next = [a, b].map(toTransfer);
+    const byId = new Map(next.map((x) => [x.id, x]));
+    state.transactions = state.transactions.map((x) => byId.get(x.id) || x);
+    await saveTransactions(next);
+  } else {
+    sorter.total += 2; // beide kommen gleich einzeln dran
+  }
+  await saveAsks();
+  sorter.history.push({ snap, text: `${a.merchant} und ${b.merchant} → ${yes ? 'Umbuchung' : 'einzeln'}` });
+  renderSorter();
+  sorterMoved();
+  render();
 }
 
 const SORT_KINDS = { expense: ['expense', 'balance', 'saving'], income: ['income', 'balance'] };
@@ -655,7 +784,7 @@ function openSorter() {
   sorter.skipped = new Set();
   sorter.history = [];
   sorter.order = { expense: [], income: [] };
-  sorter.total = sortQueue().length;
+  sorter.total = pairQueue().length + sortQueue().length;
   renderSorter();
   openSheet($('#sort-dialog'));
 }
@@ -685,7 +814,12 @@ async function sortInto(categoryId) {
 async function sorterAction(act) {
   if (act === 'close') { closeSheet($('#sort-dialog')); render(); return; }
   if (act === 'new-cat') { const t = sortQueue()[0]; openCatEditor(null, { kind: t && kindOf(t) === 'income' ? 'income' : 'expense', forSort: true }); return; }
-  if (act === 'skip') { const t = sortQueue()[0]; if (t) sorter.skipped.add(t.id); }
+  if (act === 'pair-yes' || act === 'pair-no') { await answerPair(act === 'pair-yes'); return; }
+  if (act === 'skip') {
+    const p = pairQueue()[0];
+    const t = sortQueue()[0];
+    if (p) sorter.skipped.add(p[0]); else if (t) sorter.skipped.add(t.id);
+  }
   if (act === 'transfer') { await sortInto(null); return; }
   if (act === 'undo' && sorter.history.length) {
     const step = sorter.history.pop();
@@ -912,7 +1046,7 @@ async function saveAccountEditor() {
   });
   state.accounts = a ? state.accounts.map((x) => (x.id === a.id ? next : x)) : [...state.accounts, next];
   await saveAccounts();
-  const n = await applyTransfers();
+  const { n } = await applyTransfers();
   render();
   undoable(`${a ? 'Konto gespeichert' : `„${next.name}“ angelegt`}${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
   return true;
@@ -956,7 +1090,7 @@ async function saveTemplate() {
   }));
   state.accounts = [...state.accounts, ...created];
   await saveAccounts();
-  const n = await applyTransfers();
+  const { n } = await applyTransfers();
   closeSheet($('#tpl-dialog'), 'save');
   if (view.tab !== 'accounts') selectTab('accounts'); else render();
   undoable(`${t.bank}: ${created.length} ${created.length === 1 ? 'Konto' : 'Konten'} angelegt${n ? `, ${n} Umbuchungen erkannt` : ''}`, snap);
@@ -1353,21 +1487,14 @@ function bind() {
     if (act === 'demo-remove') await removeDemo();
     if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
     if (act === 'export-json') await saveBackup();
-    if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten.', 'Alles löschen', { danger: true })) {
-      await db.clear();
-      Object.assign(state, { transactions: [], rules: orderRules(DEFAULT_RULES), settings: { ...DEFAULT_SETTINGS }, deletedIds: [], accounts: [], positions: [] });
-      setCategories(DEFAULT_CATEGORIES);
-      view.budgetShow = null;
-      await saveRules();
-      await saveCategories();
-      await db.setMeta('initialized', true);
-      info.lastImport = null;
-      info.lastBackup = null;
-      info.priceKey = null;
-      info.priceFetch = null;
+    if (act === 'restore-previous') await restorePrevious();
+    if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten, der jetzige Stand lässt sich danach in den Einstellungen zurückholen.', 'Alles löschen', { danger: true })) {
+      Object.assign(info, { lastImport: null, lastBackup: null, reviewDismissed: null, changes: 0 });
+      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [] },
+        'alles gelöscht', { priceKey: null });
       view.importReport = '';
       render();
-      toast('Alles gelöscht');
+      undoReplace('Alles gelöscht');
     }
   });
 
@@ -1384,7 +1511,7 @@ function bind() {
     const a = e.target.closest('[data-sort]');
     if (a) await sorterAction(a.dataset.sort);
   });
-  $('#sort-dialog').addEventListener('close', () => render());
+  $('#sort-dialog').addEventListener('close', () => { render(); if (!toastAction) askBackup(); });
   $('#filter-dialog').addEventListener('close', () => render());
   $('#filter-dialog').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]');
@@ -1470,7 +1597,7 @@ function bind() {
       const snap = snapshot();
       state.settings = sanitizeSettings({ ...state.settings, ownAccounts: [...state.settings.ownAccounts, name] });
       await db.setMeta('settings', state.settings);
-      const n = await applyTransfers();
+      const { n } = await applyTransfers();
       render();
       undoable(`„${name}“ hinzugefügt${n ? `, ${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen` : ''}`, snap);
     }
@@ -1591,6 +1718,7 @@ function bind() {
 async function start() {
   try {
     db = await open();
+    countChanges(db);
   } catch {
     // Ohne Speicher wäre jede Eingabe beim Schließen verloren, also lieber gar nicht erst starten.
     $('#view-overview').innerHTML = '<div class="note err"><span class="cap">kein speicher</span>Taler kann auf diesem Gerät nichts speichern. Ist das ein privates Fenster? Dann Taler normal in Safari oder vom Home-Bildschirm öffnen.</div>';
@@ -1605,6 +1733,11 @@ async function start() {
   info.reviewDismissed = await db.getMeta('reviewDismissed');
   info.priceKey = await db.getMeta('priceKey');
   info.priceFetch = await db.getMeta('priceFetch');
+  // Vor dem Zählen gab es keine Zahl: dann gilt „etwas geändert“, damit eine alte Sicherung nach 30 Tagen fällig wird.
+  info.changes = (await db.getMeta('changes')) ?? (info.lastBackup ? 1 : 0);
+  info.backupAsked = await db.getMeta('backupAsked');
+  const previous = await db.getMeta('previous');
+  info.previous = previous ? { at: previous.at, label: previous.label } : null;
   if (!(await db.getMeta('initialized'))) {
     await db.putRules(DEFAULT_RULES);
     await db.setMeta('initialized', true);
@@ -1614,6 +1747,7 @@ async function start() {
   const storedAccounts = await db.getMeta('accounts');
   state.accounts = sanitizeAccounts(storedAccounts);
   state.positions = sanitizePositions(await db.getMeta('positions'));
+  state.transferAsk = openTransferAsks(sanitizeTransferAsk(await db.getMeta('transferAsk')), state.transactions);
   // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
   if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
     const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);
@@ -1626,15 +1760,26 @@ async function start() {
   let tab = 'overview';
   try { tab = sessionStorage.getItem('taler:tab') || tab; } catch { /* egal */ }
   selectTab(tab);
-  // Einmalig: Umbuchungen im Bestand nachträglich erkennen (eigene Konten, Gegenstücke bis 7 Tage, auch Apple Pay).
-  if ((await db.getMeta('transferScan')) !== 1) {
+  // Einmalig: Umbuchungen im Bestand nachträglich erkennen (eigene Konten, Gegenstücke bis 7 Tage, auch Apple Pay),
+  // und Paare, die früher nur am gleichen Betrag Umbuchung wurden, wieder zur Frage machen.
+  const scan = (await db.getMeta('transferScan')) || 0;
+  if (scan < TRANSFER_SCAN) {
     const snap = snapshot();
-    const n = await applyTransfers({ pairs: true });
-    await db.setMeta('transferScan', 1);
-    if (n) { render(); undoable(`${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen zwischen deinen Konten`, snap); }
+    let n = 0;
+    let asked = 0;
+    if (scan < 1) ({ n, asked } = await applyTransfers({ pairs: true }));
+    if (scan < 2) asked += await recheckOldTransfers();
+    await db.setMeta('transferScan', TRANSFER_SCAN);
+    const parts = [n && `${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen`, asked && `${asked} ${asked === 1 ? 'mögliche Umbuchung' : 'mögliche Umbuchungen'} bitte unter „einordnen“ bestätigen`].filter(Boolean);
+    if (parts.length) { render(); undoable(parts.join(', '), snap); }
   }
   autoPrices();
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoPrices(); });
+  if (!toastAction) askBackup();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    autoPrices();
+    if (!toastAction) askBackup();
+  });
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     const hadController = !!navigator.serviceWorker.controller;
