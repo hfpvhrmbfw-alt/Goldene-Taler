@@ -1,7 +1,7 @@
 // Kontoauszüge (PDF) von Trade Republic und ING lesen. Reine Logik: bekommt die Textstücke der Seiten
 // mit ihrer Position (wie pdf.js sie liefert), gibt Buchungen zurück. Kein DOM, kein pdf.js, keine Uhr.
 import { sanitizeTransaction } from './model.js';
-import { hashString, parseAmount } from './logic.js';
+import { rowIds, parseAmount } from './logic.js';
 
 /**
  * Ein Textstück auf einer PDF-Seite. y wächst nach oben (PDF-Koordinaten), x nach rechts.
@@ -269,15 +269,15 @@ export function parseStatement(pages, currency = 'EUR') {
   const transactions = [];
   for (const r of rows) {
     if (r.cents === 0) continue;
-    const base = `st-${hashString(r.key)}`;
-    const n = seen.get(base) || 0;
-    seen.set(base, n + 1);
-    transactions.push(sanitizeTransaction({
-      id: n === 0 ? base : `${base}-${n}`,
-      date: r.date, time: null, amountCents: r.cents, currency,
-      merchant: r.merchant, card: r.card,
-      categoryId: null, manualCategory: false, note: '', source: 'statement', kind: r.kind,
-    }));
+    const { id, legacyId } = rowIds('st', r.key, seen);
+    transactions.push({
+      ...sanitizeTransaction({
+        id, date: r.date, time: null, amountCents: r.cents, currency,
+        merchant: r.merchant, card: r.card,
+        categoryId: null, manualCategory: false, note: '', source: 'statement', kind: r.kind,
+      }),
+      legacyId,
+    });
   }
   return { ok: true, bank, transactions, ignored: rows.length - transactions.length, errors, card: bank === 'ing' ? 'ING' : 'Trade Republic', closing };
 }

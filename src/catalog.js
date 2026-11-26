@@ -9,7 +9,7 @@ export const DEFAULT_CATEGORIES = [
   ['lebensmittel', 'Lebensmittel', 'expense'], ['essen', 'Essen & Café', 'expense'], ['mobilitaet', 'Mobilität', 'expense'],
   ['shopping', 'Shopping', 'expense'], ['drogerie', 'Drogerie', 'expense'], ['haushalt', 'Haushalt & Wohnen', 'expense'],
   ['gesundheit', 'Gesundheit', 'expense'], ['freizeit', 'Freizeit', 'expense'], ['abos', 'Abos & Digitales', 'expense'],
-  ['reisen', 'Reisen', 'expense'], ['sonstiges', 'Sonstiges', 'expense'],
+  ['reisen', 'Reisen', 'expense'], ['bargeld', 'Bargeld', 'expense'], ['sonstiges', 'Sonstiges', 'expense'],
   ['gehalt', 'Gehalt', 'income'], ['erstattung', 'Erstattung', 'income'], ['sonstige-einnahmen', 'Sonstige Einnahmen', 'income'],
   ['sparen', 'Sparen', 'saving'],
 ].map(([id, name, kind]) => ({ id, name, kind, hidden: false }));
@@ -32,7 +32,12 @@ export const DEFAULT_RULES = [
   ['kino', 'freizeit'], ['cinemaxx', 'freizeit'], ['thalia', 'freizeit'],
   ['apple.com', 'abos'], ['spotify', 'abos'], ['netflix', 'abos'], ['disney', 'abos'],
   ['lufthansa', 'reisen'], ['eurowings', 'reisen'], ['ryanair', 'reisen'], ['booking.com', 'reisen'], ['airbnb', 'reisen'],
-].map(([pattern, categoryId], i) => ({ id: `std-${String(i + 1).padStart(2, '0')}`, pattern, categoryId }));
+].map(([pattern, categoryId], i) => ({ id: `std-${String(i + 1).padStart(2, '0')}`, pattern, categoryId }))
+  // Später dazugekommen: eigene IDs, damit die Nummern oben gleich bleiben. Kommen einmalig auch in bestehende Regeln (main.js).
+  .concat([['bargeld', 'bargeld'], ['geldautomat', 'bargeld']].map(([pattern, categoryId], i) => ({ id: `std-cash-${i + 1}`, pattern, categoryId })));
+
+/** Regeln, die nach dem ersten Start dazugekommen sind; main.js ergänzt sie einmal pro Stufe (Meta `rulesVersion`). */
+export const ADDED_RULES = { 2: ['std-cash-1', 'std-cash-2'] };
 
 /**
  * Vorlagen für Banken: Konten zum Anhaken. `on` = vorab angehakt. Alles ist danach frei änderbar.

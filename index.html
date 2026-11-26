@@ -89,7 +89,14 @@
     <div id="own-offer" class="note" hidden>
       <label><input type="checkbox" name="makeOwn" checked><span><input name="ownPattern" class="inline-input" aria-label="Kontoname"> <span id="own-text">als eigenes Konto merken, künftig immer Umbuchung</span></span></label>
     </div>
+    <div id="split-box" hidden>
+      <div id="split-rows"></div>
+      <button type="button" class="textbtn" data-act="add-split">+ auf weitere kategorie aufteilen</button>
+      <p class="muted small" id="split-rest" hidden></p>
+    </div>
     <label class="field"><span class="cap">notiz</span><input name="note" autocomplete="off"></label>
+    <label class="ruleopt exclopt" id="spread-opt"><input type="checkbox" name="spread"><span>Auf 12 Monate verteilen<span class="muted small">Jahreskosten wie Versicherung oder Kfz-Steuer zählen dann je ein Zwölftel, ab diesem Monat</span></span></label>
+    <label class="ruleopt exclopt" id="tax-opt"><input type="checkbox" name="tax"><span>Für die Steuer<span class="muted small">Werbungskosten, Spenden, Handwerker … kommt in die Steuerliste</span></span></label>
     <label class="ruleopt exclopt"><input type="checkbox" name="excluded"><span>Nicht mitzählen<span class="muted small">z. B. für jemand anderen ausgelegt, Kaution, Umbuchung</span></span></label>
     <button type="button" class="textbtn merchantlink" id="edit-merchant" data-act="show-merchant"></button>
     <button class="textbtn danger deletebtn" value="delete" id="edit-delete" formnovalidate>buchung löschen</button>
@@ -137,6 +144,7 @@
       </div>
     </div>
     <p class="muted small" id="cat-kind-hint"></p>
+    <label class="field" id="cat-budget-field"><span class="cap">budget im monat</span><input name="budget" inputmode="decimal" placeholder="leer = keins" autocomplete="off"></label>
     <label class="check"><input type="checkbox" name="hidden"> beim Einordnen ausblenden</label>
     <div class="field" id="cat-merge"><span class="cap">zusammenlegen mit</span>
       <div class="inlineform"><select name="mergeTo"></select><button class="btn" value="merge" formnovalidate>zusammenlegen</button></div>

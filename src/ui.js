@@ -1,9 +1,9 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
 import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks, forSums, counts,
 } from './logic.js';
-import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
+import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans, historyOf, dividendsOf } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
 import { PRICE_SOURCE, PRICE_KEY_URL } from './prices.js';
 import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS, POSITION_KIND_LABELS } from './texts.js';
@@ -166,7 +166,7 @@ export function renderOverview(el, state, view, clock, info) {
   const cur = state.settings.currency;
   const months = monthsWithData(state.transactions, clock.month);
   const budget = budgetFor(state.transactions, state.settings, view.month, cur);
-  const s = monthSummary(state.transactions, view.month, clock.today, budget ? budget.cents : null, cur);
+  const s = monthSummary(forSums(state.transactions), view.month, clock.today, budget ? budget.cents : null, cur);
   const idx = months.indexOf(view.month);
   const uncategorized = s.byCategory.find((c) => c.categoryId === null);
   const open = state.transactions.filter(needsCategory).length;
@@ -233,6 +233,9 @@ export function renderOverview(el, state, view, clock, info) {
   if (demoCount) {
     todo += item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true });
   }
+  for (const c of contractsDue(state.contracts, clock.today)) {
+    todo += item({ tag: 'button', cls: 'open', attrs: `data-act="filter-merchant" data-merchant="${esc(c.merchant)}"`, title: `${esc(c.merchant)} kündigen?`, sub: c.days === 0 ? 'Frist endet heute' : `kündbar bis ${esc(shortDateLabel(c.cancelBy))}, noch ${plural(c.days, 'Tag', 'Tage')}`, chev: true });
+  }
   if (todo) html += `<ul class="list todo">${todo}</ul>`;
   html += view.importReport || '';
   html += curveBlock(state, view, clock, s);
@@ -244,10 +247,15 @@ export function renderOverview(el, state, view, clock, info) {
   html += `${foldOpen('cats', 'kategorien', top, view)}<ul class="list">`;
   if (s.count === 0) html += `<li class="empty">In diesem Monat noch keine Zahlungen.</li>`;
   cats.forEach((c, i) => {
+    // Mit eigenem Budget: Balken und Anteil zeigen, wie viel davon verbraucht ist.
+    const budgetCents = CATS.find((x) => x.id === c.categoryId)?.budgetCents || null;
+    const used = budgetCents ? c.cents / budgetCents : null;
     html += item({
-      tag: 'button', attrs: `data-act="filter-cat" data-cat="${c.categoryId}"${i === 0 && c.cents > 0 ? ' aria-current="true"' : ''}`,
-      title: esc(catLabel(c.categoryId)), sub: `${c.count}× · ${pct(c.share)}`, n: sumHtml(c.cents, cur),
-      extra: `<span class="share" aria-hidden="true"><i style="width:${(c.share * 100).toFixed(1)}%"></i></span>`,
+      tag: 'button', cls: used > 1 ? 'overbudget' : '', attrs: `data-act="filter-cat" data-cat="${c.categoryId}"${i === 0 && c.cents > 0 ? ' aria-current="true"' : ''}`,
+      title: esc(catLabel(c.categoryId)),
+      sub: used !== null ? `${c.count}× · ${pct(used)} von ${money(budgetCents, cur)}${used > 1 ? ' · drüber' : ''}` : `${c.count}× · ${pct(c.share)}`,
+      n: sumHtml(c.cents, cur),
+      extra: `<span class="share${used !== null ? ' budget' : ''}${used > 1 ? ' over' : ''}" aria-hidden="true"><i style="width:${(Math.min(1, used ?? c.share) * 100).toFixed(1)}%"></i></span>`,
     });
   });
   if (uncategorized) {
@@ -286,7 +294,7 @@ export function renderOverview(el, state, view, clock, info) {
  */
 function curveBlock(state, view, clock, s) {
   const cur = state.settings.currency;
-  const c = monthCurve(state.transactions, view.month, clock.today, cur);
+  const c = monthCurve(forSums(state.transactions), view.month, clock.today, cur);
   if (!c.current.some((v) => v !== 0)) return '';
   const budget = budgetFor(state.transactions, state.settings, view.month, cur)?.cents || null;
   const prev = c.previous;
@@ -324,12 +332,26 @@ function curveBlock(state, view, clock, s) {
 
 const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
-/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. */
+/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. Wahlweise nur eine Kategorie. */
 function yearBlock(state, view, clock, months) {
   const cur = state.settings.currency;
   const year = view.month.slice(0, 4);
-  const y = yearSummary(state.transactions, year, clock.today, cur);
-  if (!y.months.some((m) => m.count)) return '';
+  const sums = forSums(state.transactions);
+  const all = yearSummary(sums, year, clock.today, cur);
+  if (!all.months.some((m) => m.count)) return '';
+  // Kategorien mit Ausgaben in diesem Jahr, größte zuerst (für die Auswahl).
+  const used = new Map();
+  for (const t of sums) {
+    if (!counts(t) || !t.date.startsWith(year)) continue;
+    const v = t.currency === cur ? t.amountCents : t.baseCents;
+    if (Number.isInteger(v)) used.set(t.categoryId ?? null, (used.get(t.categoryId ?? null) || 0) + v);
+  }
+  const cats = [...used].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  const pick = view.yearCat !== undefined && cats.includes(view.yearCat) ? view.yearCat : undefined;
+  const y = pick === undefined ? all : yearSummary(sums, year, clock.today, cur, pick);
+  const select = cats.length > 1 ? `<label class="yearcat"><span class="visually-hidden">Kategorie</span><select id="year-cat">
+    <option value="">alle kategorien</option>${cats.map((id) => `<option value="${id === null ? '__none' : esc(id)}"${id === pick ? ' selected' : ''}>${esc(catLabel(id))}</option>`).join('')}
+  </select></label>` : '';
   const bars = y.months.map((m, i) => {
     const h = y.maxCents > 0 ? Math.max(0, m.cents) / y.maxCents : 0;
     const can = months.includes(m.month);
@@ -340,12 +362,12 @@ function yearBlock(state, view, clock, months) {
   const notes = [];
   if (y.averageCents !== null) notes.push(`ø ${money(y.averageCents, cur)} pro monat`);
   const ch = y.previousCents !== null ? change(y.totalCents, y.previousCents) : null;
-  if (y.incomeCents > 0) notes.push(`übrig ${signed(y.incomeCents - y.totalCents - y.savingCents, cur)}`);
+  if (y.incomeCents > 0 && pick === undefined) notes.push(`übrig ${signed(y.incomeCents - y.totalCents - y.savingCents, cur)}`);
   if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
   return `${head(`jahr ${year}`)}
-  <div class="year">
+  <div class="year">${select}
     <div class="yearhead"><span class="v" ${counting('year', y.totalCents, 'money')}>${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
-    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}">${bars}</div>
+    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}${pick !== undefined ? `, ${esc(catLabel(pick))}` : ''}">${bars}</div>
   </div>`;
 }
 
@@ -356,7 +378,10 @@ function recurringBlock(state, clock) {
   if (!list.length) return '';
   const monthly = list.reduce((a, r) => a + r.monthlyCents, 0);
   return `${head('jeden monat')}<ul class="list">
-    ${list.map((r) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr`, n: money(r.monthlyCents, cur), chev: true })).join('')}
+    ${list.map((r) => {
+    const c = state.contracts?.[r.merchant];
+    return item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr${c ? ` · kündbar bis ${esc(shortDateLabel(c.cancelBy))}` : ''}`, n: money(r.monthlyCents, cur), chev: true });
+  }).join('')}
   </ul>
   <p class="barnote">Zusammen ${money(monthly, cur)} im Monat, ${money(monthly * 12, cur)} im Jahr. Erkannt an gleichen Beträgen in mindestens drei Monaten hintereinander.</p>`;
 }
@@ -366,7 +391,7 @@ function reviewCard(state, clock, info) {
   const prev = previousMonth(clock.month);
   if (Number(clock.today.slice(8, 10)) > 10 || info.reviewDismissed === prev) return '';
   const cur = state.settings.currency;
-  const r = monthReview(state.transactions, prev, cur);
+  const r = monthReview(forSums(state.transactions), prev, cur);
   if (!r) return '';
   // Budget nur, wenn es im Vormonat schon galt.
   const bf = budgetFor(state.transactions, state.settings, prev, cur);
@@ -433,7 +458,7 @@ export function renderList(el, state, view, clock) {
     </div>` : ''}
   </div>
   <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${dayTotal(total, cur) || money(0, cur)}</p>
-  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) : ''}
+  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) + contractField(state, view.listMerchant) : ''}
   <label class="search">${ICON.search}<input type="search" id="f-query" value="${esc(view.query)}" placeholder="suchen" aria-label="Händler oder Notiz suchen"></label>
   <div class="seg" role="group" aria-label="Zeitraum">
     <button data-act="list-scope" data-scope="month" aria-pressed="${!!m}">${esc(monthName(m || view.lastListMonth || clock.month).toLowerCase())}</button>
@@ -466,7 +491,10 @@ export function renderList(el, state, view, clock) {
       const sub = [
         t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : '',
         g.date ? '' : dayLabel(t.date, clock.today, clock.yesterday),
-        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind], base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
+        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind],
+        t.splits?.length ? `+ ${t.splits.map((p) => catLabel(p.categoryId)).join(', ')}` : '',
+        t.spread ? 'auf 12 Monate verteilt' : '', t.tax ? 'Steuer' : '',
+        base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
       ].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
@@ -503,6 +531,23 @@ function merchantKpis(state, merchant, clock) {
     <div class="kpi"><div class="cap">${clock.today.slice(0, 4)}</div><div class="v">${money(s.yearCents, cur)}</div><div class="sub">${plural(s.yearCount, 'Zahlung', 'Zahlungen')}</div></div>
     <div class="kpi"><div class="cap">insgesamt</div><div class="v">${money(s.totalCents, cur)}</div><div class="sub">ø ${money(s.averageCents, cur)} · seit ${esc(monthLabel(s.firstDate).toLowerCase())}</div></div>
   </div>`;
+}
+
+/** Händler-Ansicht: bis wann der Vertrag kündbar ist (Abo, Versicherung). Erinnerung erscheint 30 Tage vorher in der Übersicht. */
+function contractField(state, merchant) {
+  const c = state.contracts?.[merchant];
+  return `<label class="field contract"><span class="cap">kündbar bis</span><input type="date" id="cancel-by" data-merchant="${esc(merchant)}" value="${c ? esc(c.cancelBy) : ''}"></label>`;
+}
+
+/** „12. Dezember“ */
+export const shortDateLabel = (d) => `${Number(d.slice(8, 10))}. ${MONTHS[Number(d.slice(5, 7)) - 1]}`;
+
+/** Verträge, deren Kündigungsfrist in den nächsten 30 Tagen endet (heute eingeschlossen), nächste zuerst. */
+export function contractsDue(contracts, today) {
+  return Object.entries(contracts || {})
+    .map(([merchant, c]) => ({ merchant, cancelBy: c.cancelBy, days: daysBetween(today, c.cancelBy) }))
+    .filter((c) => c.days >= 0 && c.days <= 30)
+    .sort((a, b) => a.days - b.days);
 }
 
 /** Kasten „automatisch“: was Taler rechnet und woraus. */
@@ -610,6 +655,7 @@ export function renderSettings(el, state, view, info, clock) {
   <ul class="list">
     ${item({ tag: 'button', cls: backupDue(state, info, clock.today) ? 'open' : '', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, n: 'json' })}
     ${item({ tag: 'button', attrs: 'data-act="export-csv"', title: 'Tabelle für Numbers oder Excel', n: 'csv' })}
+    ${taxYears(state.transactions, state.settings.currency).map((y) => item({ tag: 'button', attrs: `data-act="export-tax" data-year="${y.year}"`, title: `Steuerliste ${y.year}`, sub: `${plural(y.count, 'Buchung', 'Buchungen')} für die Steuer · ${money(y.cents, state.settings.currency)}`, n: 'csv' })).join('')}
     <li><label class="item" for="backup-file"><span class="t"><b>Sicherung laden</b><span>ersetzt den aktuellen Stand</span></span><span class="chev" aria-hidden="true">›</span></label></li>
     ${info.previous ? item({ tag: 'button', attrs: 'data-act="restore-previous"', title: 'Vorherigen Stand zurückholen', sub: `vor „${esc(info.previous.label)}“ am ${esc(dateTimeLabel(info.previous.at))}`, chev: true }) : ''}
   </ul>
@@ -721,14 +767,43 @@ export function statementReportHtml(bank, added, known, dupes, kinds, errors) {
   return html;
 }
 
-/** CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. */
-export function buildCsv(transactions) {
-  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt', 'Art'].map(q).join(';')];
+/** Jahre mit Buchungen „für die Steuer“, neuestes zuerst, mit Anzahl und Summe (Ausgaben positiv). */
+export function taxYears(transactions, currency) {
+  const map = new Map();
   for (const t of transactions) {
-    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja', KIND_LABELS[kindOf(t)]].map(q).join(';'));
+    if (!t.tax || t.source === 'demo') continue;
+    const y = t.date.slice(0, 4);
+    const e = map.get(y) || { year: y, count: 0, cents: 0 };
+    const v = t.currency === currency ? t.amountCents : t.baseCents;
+    e.count += 1;
+    if (Number.isInteger(v)) e.cents += v;
+    map.set(y, e);
   }
-  return '﻿' + lines.join('\r\n');
+  return [...map.values()].sort((a, b) => (a.year < b.year ? 1 : -1));
+}
+
+/**
+ * CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. Ohne Beispieldaten.
+ * Beträge wie auf dem Kontoauszug: Ausgaben minus, Einnahmen plus. „Betrag EUR“ ist bei Fremdwährung der abgerechnete Betrag
+ * (leer, wenn er fehlt). Aufgeteilte Buchungen nennen ihre Teile in „Teile“.
+ * @param {object[]} transactions
+ * @param {{accounts?: object[], currency?: string, onlyTax?: boolean}} [opts]
+ */
+export function buildCsv(transactions, { accounts = [], currency = 'EUR', onlyTax = false } = {}) {
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', `Betrag ${currency}`, 'Kategorie', 'Teile', 'Art', 'Konto', 'Karte', 'Notiz', 'Mitgezählt', 'Auf 12 Monate', 'Steuer']
+    .map(q).join(';')];
+  for (const t of transactions) {
+    if (t.source === 'demo' || (onlyTax && !t.tax)) continue;
+    const base = t.currency === currency ? t.amountCents : t.baseCents;
+    const acc = accountFor(t, accounts);
+    lines.push([
+      t.date, t.time || '', t.merchant, amountInput(-t.amountCents), t.currency, Number.isInteger(base) ? amountInput(-base) : '',
+      catLabel(t.categoryId), (t.splits || []).map((p) => `${catLabel(p.categoryId)} ${amountInput(-p.cents)}`).join(', '),
+      KIND_LABELS[kindOf(t)], acc ? accountLabel(acc) : '', t.card, t.note, t.excluded ? 'nein' : 'ja', t.spread ? 'ja' : '', t.tax ? 'ja' : '',
+    ].map(q).join(';'));
+  }
+  return '\ufeff' + lines.join('\r\n');
 }
 
 // ---------- Konten ----------
@@ -807,6 +882,7 @@ export function renderAccounts(el, state, view, clock) {
     html += '</ul>';
   }
   html += `<ul class="list">${item({ tag: 'button', attrs: 'data-act="template"', title: '<span class="addtext">+ konto oder depot</span>' })}</ul>`;
+  html += historyBlock(state.wealthHistory, null, cur, clock.month, 'verlauf');
   const flows = monthFlows(state.transactions, accounts, clock.month, cur);
   if (flows.length) {
     const label = (a) => (a ? esc(accountLabel(a)) : 'unbekanntes Konto');
@@ -822,6 +898,35 @@ export function renderAccounts(el, state, view, clock) {
   el.innerHTML = html;
 }
 
+/**
+ * Verlauf über die letzten zwölf Monate als Balken (Stand je Monat, wie Taler ihn beim Öffnen gemerkt hat).
+ * Erst ab zwei Monaten mit Wert; Monate ohne Wert bleiben leer.
+ */
+function historyBlock(history, id, cur, month, title) {
+  const points = historyOf(history, id);
+  if (points.length < 2) return '';
+  const byMonth = new Map(points.map((p) => [p.month, p.cents]));
+  const months = [];
+  for (let m = month, i = 0; i < 12; i++, m = previousMonth(m)) months.unshift(m);
+  // Achse ab knapp unter dem kleinsten Wert, sonst sähen alle Balken gleich aus (die Zahl darüber nennt die Änderung).
+  const vals = points.map((p) => p.cents);
+  const hi = Math.max(1, ...vals);
+  const mn = Math.min(...vals);
+  const lo = hi > mn ? Math.max(0, mn - (hi - mn)) : 0;
+  const max = hi - lo || 1;
+  const first = points[0].cents;
+  const last = points[points.length - 1].cents;
+  const label = `${title}: ${months.filter((m) => byMonth.has(m)).map((m) => `${monthName(m)} ${money(byMonth.get(m), cur)}`).join(', ')}`;
+  const bars = months.map((m) => {
+    const v = byMonth.get(m);
+    const h = v !== undefined ? Math.max(0.04, (Math.max(0, v) - lo) / max) : 0;
+    return `<div class="ybar${m === month ? ' on' : ''}"><span class="col"><i style="height:${(h * 100).toFixed(1)}%"></i></span><span class="lbl">${MONTH_INITIALS[Number(m.slice(5, 7)) - 1]}</span></div>`;
+  }).join('');
+  return `${head(title)}<div class="year">
+    <div class="yearhead"><span class="sub">${esc(`${signed(last - first, cur)} seit ${monthLabel(points[0].month).toLowerCase()}`)}</span></div>
+    <div class="ybars static" role="img" aria-label="${esc(label)}">${bars}</div></div>`;
+}
+
 /** Ein Konto: Stand, beim Eingangskonto „frei für den Monat“, Fixkosten, Weiterleitungen, Aktionen. */
 export function renderAccount(el, state, view, clock, info = {}) {
   const cur = state.settings.currency;
@@ -833,7 +938,8 @@ export function renderAccount(el, state, view, clock, info = {}) {
   let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
   <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v"${b ? ` ${counting(`stand-${a.id}`, b.cents, 'hero')}` : ''}>${b ? moneyHero(b.cents, cur) : '—'}</div>
     <div class="sub">${d && d.costCents ? `<span class="${d.gainCents >= 0 ? 'gain' : 'loss'}">${signed(d.gainCents, cur)} (${gainPct(d.gainCents, d.costCents).replace(/<[^>]+>/g, '')})</span> seit Kauf · ` : ''}${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
-  if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info);
+  if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info, clock);
+  html += historyBlock(state.wealthHistory, a.id, cur, clock.month, 'verlauf');
   const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
   let onward = [];
   if (a.main) {
@@ -911,7 +1017,7 @@ function priceKeyBlock(info, today) {
 }
 
 /** Depot: Positionen, Sparpläne aus dem Auszug, Kurse. */
-function depotBlocks(a, d, state, cur, info) {
+function depotBlocks(a, d, state, cur, info, clock) {
   const online = !!info.priceKey;
   // Datum nur dort zeigen, wo ein Kurs älter ist als die anderen.
   const newest = (d ? d.items : []).reduce((m, x) => (x.position.priceDate > m ? x.position.priceDate : m), '');
@@ -926,6 +1032,14 @@ function depotBlocks(a, d, state, cur, info) {
   }
   html += item({ tag: 'button', attrs: `data-act="new-position" data-account="${esc(a.id)}"`, title: '<span class="addtext">+ aktie, etf oder krypto eintragen</span>' });
   html += '</ul>';
+  const year = clock.today.slice(0, 4);
+  const div = dividendsOf(a, state.positions, state.transactions, state.accounts, year, cur);
+  if (div.items.length) {
+    html += `${head(`ausschüttungen ${year}`)}<ul class="list">
+      ${div.items.slice(0, 5).map((t) => item({ tag: 'button', attrs: `data-act="edit" data-id="${esc(t.id)}"`, title: esc(t.merchant), sub: esc(shortDate(t.date)), n: `<span class="in">+${money(-(t.currency === cur ? t.amountCents : t.baseCents), cur)}</span>` })).join('')}
+      ${item({ cls: 'sum', title: `zusammen ${year}`, sub: plural(div.items.length, 'Zahlung', 'Zahlungen'), n: `<span class="in">+${money(div.cents, cur)}</span>` })}
+    </ul>`;
+  }
   const plans = depotPlans(a, state.transactions, state.accounts);
   if (plans.length) {
     html += `${head('sparpläne · aus dem kontoauszug')}<ul class="list">`;

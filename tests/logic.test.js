@@ -167,7 +167,7 @@ test('Katalog: IDs eindeutig, Kategorien gültig', () => {
 });
 
 test('Export/Import: Rundweg, neuere Version abgelehnt, kaputte Einträge übersprungen', () => {
-  const tx = L.parseLog(fx('log.txt')).transactions;
+  const tx = L.adoptLegacyIds(L.parseLog(fx('log.txt')).transactions, new Set());
   const state = { transactions: tx, rules: DEFAULT_RULES, settings: M.sanitizeSettings({ monthlyBudgetCents: 50000 }), deletedIds: ['x'] };
   const json = JSON.stringify(M.buildExport(state, '2026-10-20T12:00:00Z'));
   const r = M.parseImport(json);
@@ -469,7 +469,9 @@ test('mergeCategory: Buchungen und Regeln wandern mit', () => {
 
 test('Kategorien und Einstellungen: bereinigt, Sicherung mit und ohne Kategorienliste', () => {
   assert.deepEqual(M.sanitizeCategories([{ id: 'a', name: ' Haustier ', kind: 'income', hidden: true }, { id: 'a', name: 'doppelt' }, { id: '', name: 'x' }, null]),
-    [{ id: 'a', name: 'Haustier', kind: 'income', hidden: true }]);
+    [{ id: 'a', name: 'Haustier', kind: 'income', hidden: true, budgetCents: null }]);
+  assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'expense', budgetCents: 40000 }).budgetCents, 40000);
+  assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'income', budgetCents: 40000 }).budgetCents, null);
   assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'quatsch' }).kind, 'expense');
   assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: 5, categoryId: 'c-1' }).categoryId, 'c-1');
   assert.equal(M.sanitizeRule({ id: 'r', pattern: 'A', categoryId: 'c-1' }).categoryId, 'c-1');
@@ -554,4 +556,79 @@ test('backupDue: nie gesichert, viele Änderungen oder alt und geändert', async
   assert.equal(backupDue(st, { lastBackup: '2026-11-20', changes: 30 }, '2026-11-23'), true);
   assert.equal(backupDue(st, { lastBackup: '2026-10-01', changes: 0 }, '2026-11-23'), false);
   assert.equal(backupDue(st, { lastBackup: '2026-10-01', changes: 1 }, '2026-11-23'), true);
+});
+
+const tr = (id, date, cents, extra = {}) => ({ id, date, time: null, amountCents: cents, currency: 'EUR', baseCents: null, merchant: id, card: '', categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false, kind: 'expense', accountId: null, toAccountId: null, spread: false, splits: [], tax: false, ...extra });
+
+test('addMonths: gleicher Tag, am Monatsende gekürzt, über den Jahreswechsel', () => {
+  assert.equal(L.addMonths('2026-01-31', 1), '2026-02-28');
+  assert.equal(L.addMonths('2026-11-15', 3), '2027-02-15');
+  assert.equal(L.addMonths('2026-03-10', 0), '2026-03-10');
+});
+
+test('forSums: Jahreskosten zählen zu je einem Zwölftel, Zahlung nur einmal', () => {
+  const list = L.forSums([tr('kfz', '2026-11-05', 12010, { spread: true, categoryId: 'mobilitaet' })]);
+  assert.equal(list.length, 12);
+  assert.equal(list.reduce((a, t) => a + t.amountCents, 0), 12010);
+  assert.equal(list[0].amountCents, 1010);
+  assert.equal(list[1].date, '2026-12-05');
+  assert.equal(list[11].date, '2027-10-05');
+  const nov = L.monthSummary(list, '2026-11', '2026-11-20');
+  assert.equal(nov.spentCents, 1010);
+  assert.equal(nov.count, 1);
+  assert.equal(L.monthSummary(list, '2026-12', '2026-11-20').count, 0);
+  assert.equal(L.monthSummary(list, '2026-12', '2026-11-20').spentCents, 1000);
+});
+
+test('forSums: aufgeteilte Buchung zählt je Kategorie, Rest bleibt bei der eigenen', () => {
+  const t = tr('dm', '2026-11-05', 3000, { categoryId: 'drogerie', splits: [{ categoryId: 'haushalt', cents: 1200 }] });
+  const s = L.monthSummary(L.forSums([t]), '2026-11', '2026-11-20');
+  assert.equal(s.count, 1);
+  assert.deepEqual(s.byCategory.map((c) => [c.categoryId, c.cents]), [['drogerie', 1800], ['haushalt', 1200]]);
+  // Fremdwährung: Euro-Betrag anteilig, Summe bleibt gleich
+  const f = L.forSums([{ ...t, currency: 'USD', baseCents: 2800 }]);
+  assert.equal(f.reduce((a, x) => a + x.baseCents, 0), 2800);
+});
+
+test('sanitizeSplits: Vorzeichen der Buchung, Teile kleiner als der Rest, höchstens vier', () => {
+  assert.deepEqual(M.sanitizeSplits([{ categoryId: 'a', cents: 500 }], -2000), [{ categoryId: 'a', cents: -500 }]);
+  assert.deepEqual(M.sanitizeSplits([{ categoryId: 'a', cents: 2000 }], 2000), []);
+  assert.deepEqual(M.sanitizeSplits([{ categoryId: 'a', cents: 1500 }, { categoryId: 'b', cents: 600 }], 2000), [{ categoryId: 'a', cents: 1500 }]);
+  assert.equal(M.sanitizeSplits(Array.from({ length: 6 }, () => ({ categoryId: 'a', cents: 1 })), 2000).length, 4);
+});
+
+test('yearSummary: nur eine Kategorie', () => {
+  const list = [tr('a', '2026-01-05', 1000, { categoryId: 'lebensmittel' }), tr('b', '2026-02-05', 500, { categoryId: 'freizeit' }), tr('c', '2026-02-07', 300)];
+  assert.equal(L.yearSummary(list, '2026', '2026-11-20', 'EUR', 'lebensmittel').totalCents, 1000);
+  assert.equal(L.yearSummary(list, '2026', '2026-11-20', 'EUR', null).totalCents, 300);
+  assert.equal(L.yearSummary(list, '2026', '2026-11-20', 'EUR').totalCents, 1800);
+});
+
+test('Verträge: gültige Daten bleiben, Erinnerung 30 Tage vorher', async () => {
+  const { contractsDue, buildCsv, taxYears } = await import('../src/ui.js');
+  assert.deepEqual(M.sanitizeContracts({ Netflix: { cancelBy: '2026-12-12' }, Kaputt: { cancelBy: '12.12.' }, '': { cancelBy: '2026-12-12' } }), { Netflix: { cancelBy: '2026-12-12' } });
+  const due = contractsDue({ A: { cancelBy: '2026-12-20' }, B: { cancelBy: '2027-02-01' }, C: { cancelBy: '2026-11-01' }, D: { cancelBy: '2026-11-26' } }, '2026-11-26');
+  assert.deepEqual(due.map((c) => [c.merchant, c.days]), [['D', 0], ['A', 24]]);
+  // Tabelle: Beispieldaten fehlen, Ausgaben minus, Steuerliste nur markierte
+  const list = [tr('a', '2026-03-01', 1250, { tax: true }), tr('b', '2026-03-02', -300000, { kind: 'income' }), tr('c', '2026-03-03', 500, { source: 'demo' })];
+  const csv = buildCsv(list).split('\r\n');
+  assert.equal(csv.length, 3);
+  assert.match(csv[1], /"-12,50"/);
+  assert.match(csv[2], /"3000,00"/);
+  assert.equal(buildCsv(list, { onlyTax: true }).split('\r\n').length, 2);
+  assert.deepEqual(taxYears(list, 'EUR'), [{ year: '2026', count: 1, cents: 1250 }]);
+});
+
+test('IDs: neue mit 64 Bit, schon eingelesene Zeilen behalten ihre frühere ID', () => {
+  assert.equal(L.hashString64('abc'), 'e71fa2190541574b');
+  const text = '2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa\n2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa';
+  const rows = L.parseLog(text).transactions;
+  assert.match(rows[0].id, /^sc-[0-9a-f]{16}$/);
+  assert.equal(rows[1].id, `${rows[0].id}-1`);
+  assert.equal(rows[0].legacyId, `sc-${L.hashString('2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa')}`);
+  // Die erste Zeile ist schon unter der alten ID da, die zweite neu
+  const kept = L.adoptLegacyIds(rows, new Set([rows[0].legacyId]));
+  assert.equal(kept[0].id, rows[0].legacyId);
+  assert.equal(kept[1].id, rows[1].id);
+  assert.ok(kept.every((t) => !('legacyId' in t)));
 });

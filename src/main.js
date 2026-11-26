@@ -1,18 +1,18 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, sanitizeContracts, sanitizeWealthHistory, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
-import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
+import { wealthSnapshot, withSnapshot, accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
-  categoryKind, mergeCategory, isOwnAccountMove, transfersIn, classifyTransfers, recheckTransfers, openTransferAsks, daysBetween,
+  categoryKind, mergeCategory, isOwnAccountMove, transfersIn, adoptLegacyIds, classifyTransfers, recheckTransfers, openTransferAsks, daysBetween,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind, coinUrl, pickCoinQuotes, coinsToFetch, COIN_NAMES } from './prices.js';
 import { pdfPages } from './pdf.js';
-import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
+import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES, ADDED_RULES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
 import * as ui from './ui.js';
 import * as motion from './motion.js';
@@ -29,7 +29,7 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [] };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [], contracts: {}, wealthHistory: {} };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
@@ -51,6 +51,7 @@ async function saveCategories() { await db.setMeta('categories', state.categorie
 async function saveAccounts() { await db.setMeta('accounts', state.accounts); }
 async function savePositions() { await db.setMeta('positions', state.positions); }
 async function saveAsks() { await db.setMeta('transferAsk', state.transferAsk); }
+async function saveContracts() { await db.setMeta('contracts', state.contracts); }
 const newAccountId = (i = 0) => `a-${Date.now().toString(36)}${i ? `-${i}` : ''}`;
 /** Alle Namen, an denen Taler eigene Konten erkennt (Konten und weitere Namen aus den Einstellungen). */
 const own = () => ownNames(state.settings, state.accounts);
@@ -71,7 +72,7 @@ async function reapplyRules() {
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions, transferAsk: state.transferAsk });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions, transferAsk: state.transferAsk, contracts: state.contracts });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -90,6 +91,7 @@ async function restore(snap) {
   await saveAccounts();
   await savePositions();
   await saveAsks();
+  await saveContracts();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -106,8 +108,18 @@ const TABS = { overview: 'Übersicht', list: 'Buchungen', accounts: 'Konten', ac
 const NAV_TAB = { rules: 'settings', categories: 'settings', account: 'accounts' };
 const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
+/** Vermögen dieses Monats für den Verlauf merken (überschreibt den Wert des Monats, schreibt nur bei Änderung). */
+function recordWealth() {
+  if (!state.accounts.length) return;
+  const next = withSnapshot(state.wealthHistory, clock().month, wealthSnapshot(state.accounts, state.transactions, state.settings.currency, state.positions));
+  if (next === state.wealthHistory) return;
+  state.wealthHistory = next;
+  db.setMeta('wealthHistory', next).catch(() => {});
+}
+
 function render() {
   const c = clock();
+  if (view.tab === 'accounts' || view.tab === 'account') recordWealth();
   const el = $(`#view-${view.tab}`);
   if (view.tab === 'overview') ui.renderOverview(el, state, view, c, info);
   if (view.tab === 'list') ui.renderList(el, state, view, c);
@@ -354,7 +366,7 @@ async function recheckOldTransfers() {
 async function importLog(text, { demo = false } = {}) {
   const snap = snapshot();
   const parsed = parseLog(text, state.settings.currency);
-  let incoming = parsed.transactions;
+  let incoming = adoptLegacyIds(parsed.transactions, new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]));
   let dupes = 0;
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
   else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
@@ -397,7 +409,7 @@ async function importStatement(file) {
   const r = parseStatement(pages, state.settings.currency);
   if (!r.ok) { await ask(STATEMENT_ERRORS[r.error], 'OK', { cancel: false }); return; }
   const snap = snapshot();
-  const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
+  const { incoming: rows, dupes } = withoutCrossDuplicates(adoptLegacyIds(r.transactions, new Set([...state.transactions.map((t) => t.id), ...state.deletedIds])));
   // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
   const { incoming, changed, ask } = markTransfers(rows);
   const byId = new Map(changed.map((t) => [t.id, t]));
@@ -457,6 +469,8 @@ async function replaceAll(r, label, keep = {}) {
   state.accounts = r.accounts || [];
   state.positions = r.positions;
   state.transferAsk = openTransferAsks(r.transferAsk, state.transactions);
+  state.contracts = r.contracts || {};
+  state.wealthHistory = r.wealthHistory || {};
   view.budgetShow = null;
   if ('priceKey' in keep) { info.priceKey = keep.priceKey; info.priceFetch = null; }
   await saveTransactions(state.transactions);
@@ -465,6 +479,8 @@ async function replaceAll(r, label, keep = {}) {
   await saveAccounts();
   await savePositions();
   await saveAsks();
+  await saveContracts();
+  await db.setMeta('wealthHistory', state.wealthHistory);
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
@@ -536,11 +552,17 @@ function renderFilter() {
 // ---------- Bearbeiten ----------
 /** Art im Bearbeiten-Blatt wählen. Eine Kategorie gibt es überall außer bei Umbuchungen; „gleicht sich aus“ hat keinen eigenen Knopf. */
 function setEditKind(kind) {
+  // Teile gehören zur Art (Ausgabe- oder Einnahme-Kategorien): beim Wechsel neu anfangen.
+  if (kind !== view.editKind) { $('#split-rows').innerHTML = ''; $('[data-act="add-split"]').hidden = false; }
   view.editKind = kind;
   for (const b of document.querySelectorAll('#kind-seg button')) b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
   const f = $('#edit-form');
   f.categoryId.closest('label').hidden = kind === 'transfer';
   if (kind === 'transfer') $('#rule-offer').hidden = true;
+  $('#spread-opt').hidden = kind !== 'expense';
+  $('#tax-opt').hidden = kind === 'transfer';
+  $('#split-box').hidden = !(kind === 'expense' || kind === 'income');
+  updateSplitRest();
   fillAccountSelects();
   updateOwnOffer();
   $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : kind === 'balance' ? 'betrag (− = eingegangen)' : 'betrag';
@@ -566,6 +588,46 @@ function fillAccountSelects() {
   $('#acct-cap').textContent = moving ? 'von' : 'konto';
 }
 
+// ---------- Aufteilen ----------
+/** Eine Zeile „Kategorie + Betrag“ für einen Teil der Buchung. */
+function addSplitRow(categoryId = null, cents = null) {
+  const rows = $('#split-rows');
+  if (rows.children.length >= MAX_SPLITS) return;
+  const kinds = view.editKind === 'income' ? ['income'] : ['expense'];
+  const row = document.createElement('div');
+  row.className = 'two splitrow';
+  row.innerHTML = `<label class="field"><span class="cap">teil in</span><select name="splitCat">${ui.categoryOptions(categoryId, { withNone: false, kinds })}</select></label>`
+    + `<label class="field"><span class="cap">betrag</span><input name="splitAmount" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${cents ? ui.amountInput(Math.abs(cents)) : ''}"></label>`
+    + '<button type="button" class="textbtn" data-act="remove-split" aria-label="Teil entfernen">entfernen</button>';
+  rows.append(row);
+  $('[data-act="add-split"]').hidden = rows.children.length >= MAX_SPLITS;
+}
+
+/** Teile aus dem Bearbeiten-Blatt; leere Zeilen fallen weg. null = ein Betrag ist keine Zahl. */
+function readSplits() {
+  const out = [];
+  for (const row of document.querySelectorAll('#split-rows .splitrow')) {
+    const text = row.querySelector('[name="splitAmount"]').value.trim();
+    if (!text) continue;
+    const a = parseAmount(text);
+    if (!a) return null;
+    out.push({ categoryId: row.querySelector('[name="splitCat"]').value, cents: Math.abs(a.cents) });
+  }
+  return out;
+}
+
+/** Was bei der eigenen Kategorie bleibt, unter den Teilen. */
+function updateSplitRest() {
+  const f = $('#edit-form');
+  const p = $('#split-rest');
+  const parts = readSplits();
+  const amount = parseAmount(f.amount.value);
+  if (!parts?.length || !amount) { p.hidden = true; return; }
+  const rest = Math.abs(amount.cents) - parts.reduce((a, x) => a + x.cents, 0);
+  p.hidden = false;
+  p.textContent = rest > 0 ? `Rest bei ${ui.catLabel(f.categoryId.value || null)}: ${ui.money(rest, amount.currency || view.editing.currency)}` : 'Die Teile sind zusammen so groß wie die ganze Buchung oder größer.';
+}
+
 function openEditor(id) {
   const c = clock();
   const t = id ? state.transactions.find((x) => x.id === id) : { ...emptyTransaction(null, c.today), time: c.time };
@@ -585,6 +647,12 @@ function openEditor(id) {
   f.categoryId.innerHTML = `${ui.categoryOptions(t.categoryId)}<optgroup label="Zählt nicht"><option value="__transfer">Umbuchung (eigene Konten)</option></optgroup>`;
   f.note.value = t.note;
   f.excluded.checked = !!t.excluded;
+  f.spread.checked = !!t.spread;
+  f.tax.checked = !!t.tax;
+  $('#split-rows').innerHTML = '';
+  $('[data-act="add-split"]').hidden = false;
+  view.editKind = kindOf(t);
+  for (const p of t.splits || []) addSplitRow(p.categoryId, p.cents);
   delete f.accountId.dataset.filled;
   delete f.toAccountId.dataset.filled;
   setEditKind(kindOf(t));
@@ -657,6 +725,17 @@ async function saveEditor() {
     }
     baseCents = b.cents;
   }
+  const parts = kind === 'expense' || kind === 'income' ? readSplits() : [];
+  if (parts === null) {
+    $('#edit-error').textContent = 'Die Beträge der Teile bitte als Zahl angeben, z. B. 12,40.';
+    $('#edit-error').hidden = false;
+    return false;
+  }
+  if (parts.reduce((a, x) => a + x.cents, 0) >= Math.abs(cents)) {
+    $('#edit-error').textContent = 'Die Teile zusammen müssen kleiner sein als der ganze Betrag; der Rest bleibt bei der Kategorie oben.';
+    $('#edit-error').hidden = false;
+    return false;
+  }
   const snap = snapshot();
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let categoryId = cat;
@@ -666,6 +745,9 @@ async function saveEditor() {
     ...t, id, merchant: f.merchant.value, amountCents: cents, kind, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
+    spread: kind === 'expense' && f.spread.checked,
+    tax: kind !== 'transfer' && f.tax.checked,
+    splits: parts,
     accountId: state.accounts.length ? f.accountId.value || null : t.accountId,
     toAccountId: state.accounts.length && (kind === 'transfer' || kind === 'saving') ? f.toAccountId.value || null : null,
   });
@@ -865,6 +947,7 @@ function setCatKind(kind, locked) {
     b.disabled = locked && b.dataset.ckind !== kind;
   }
   $('#cat-kind-hint').textContent = KIND_HINTS[kind] + (locked ? ' Die Art lässt sich nur bei neuen Kategorien wählen.' : '');
+  $('#cat-budget-field').hidden = kind !== 'expense';
 }
 
 /** Kategorie bearbeiten oder neu anlegen. `forSort`: aus dem Einordnen heraus, die Zahlung kommt danach gleich hinein. */
@@ -874,11 +957,12 @@ function openCatEditor(id, { kind = 'expense', forSort = false } = {}) {
   const f = $('#cat-form');
   f.name.value = c ? c.name : '';
   f.hidden.checked = !!c?.hidden;
+  f.budget.value = c?.budgetCents ? ui.amountInput(c.budgetCents) : '';
   setCatKind(c ? c.kind : kind, !!c);
   const others = c ? state.categories.filter((x) => x.id !== c.id && x.kind === c.kind) : [];
   $('#cat-merge').hidden = !others.length;
   f.mergeTo.innerHTML = others.map((x) => `<option value="${ui.esc(x.id)}">${ui.esc(x.name)}</option>`).join('');
-  const used = c && state.transactions.some((t) => t.categoryId === c.id);
+  const used = c && state.transactions.some((t) => t.categoryId === c.id || (t.splits || []).some((p) => p.categoryId === c.id));
   $('#cat-delete').hidden = !(c && c.id.startsWith('c-') && !used);
   $('#cat-title').textContent = c ? 'kategorie ändern' : 'neue kategorie';
   $('#cat-error').hidden = true;
@@ -895,8 +979,11 @@ async function saveCatEditor() {
   const name = f.name.value.trim();
   if (!name) return catError('Bitte einen Namen angeben.');
   if (state.categories.some((x) => x !== c && x.name.toLowerCase() === name.toLowerCase())) return catError('Diesen Namen gibt es schon.');
+  const kind = c ? c.kind : view.catKind;
+  const budget = kind === 'expense' && f.budget.value.trim() ? parseAmount(f.budget.value) : null;
+  if (kind === 'expense' && f.budget.value.trim() && (!budget || budget.cents <= 0)) return catError('Das Budget bitte als Betrag angeben, z. B. 400.');
   const snap = snapshot();
-  const next = { id: c ? c.id : `c-${Date.now().toString(36)}`, name, kind: c ? c.kind : view.catKind, hidden: forSort ? false : f.hidden.checked };
+  const next = { id: c ? c.id : `c-${Date.now().toString(36)}`, name, kind, hidden: forSort ? false : f.hidden.checked, budgetCents: budget ? budget.cents : null };
   setCategories(c ? state.categories.map((x) => (x.id === c.id ? next : x)) : [...state.categories, next]);
   await saveCategories();
   if (forSort) { closeSheet($('#cat-dialog'), 'save'); await sortInto(next.id); return true; }
@@ -928,7 +1015,7 @@ async function mergeCatEditor() {
 
 async function deleteCatEditor() {
   const { c } = view.catEditing;
-  if (!c || !c.id.startsWith('c-') || state.transactions.some((t) => t.categoryId === c.id)) return;
+  if (!c || !c.id.startsWith('c-') || state.transactions.some((t) => t.categoryId === c.id || (t.splits || []).some((p) => p.categoryId === c.id))) return;
   const snap = snapshot();
   const gone = state.rules.filter((r) => r.categoryId === c.id);
   for (const r of gone) await db.deleteRule(r.id);
@@ -1416,6 +1503,8 @@ function bind() {
       if (b.dataset.tab === 'overview') { view.listCats = []; view.listMerchant = null; }
       selectTab(b.dataset.tab);
     }
+    if (act === 'add-split') { addSplitRow(); $('#split-rows .splitrow:last-child select').focus(); return; }
+    if (act === 'remove-split') { b.closest('.splitrow').remove(); $('[data-act="add-split"]').hidden = false; updateSplitRest(); return; }
     if (act === 'filter-cat' || act === 'filter-merchant' || act === 'show-merchant') {
       const merchant = act !== 'filter-cat';
       // Händler: alle Zahlungen dort, nicht nur dieser Monat.
@@ -1485,12 +1574,17 @@ function bind() {
     if (act === 'restore-std') await restoreDefaultRules();
     if (act === 'demo') await importLog(demoLog(), { demo: true });
     if (act === 'demo-remove') await removeDemo();
-    if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
+    if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions, { accounts: state.accounts, currency: state.settings.currency }), 'text/csv;charset=utf-8');
+    if (act === 'export-tax') {
+      const year = b.dataset.year;
+      const list = state.transactions.filter((t) => t.date.startsWith(year));
+      await saveFile(`taler-steuer-${year}.csv`, ui.buildCsv(list, { accounts: state.accounts, currency: state.settings.currency, onlyTax: true }), 'text/csv;charset=utf-8');
+    }
     if (act === 'export-json') await saveBackup();
     if (act === 'restore-previous') await restorePrevious();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten, der jetzige Stand lässt sich danach in den Einstellungen zurückholen.', 'Alles löschen', { danger: true })) {
       Object.assign(info, { lastImport: null, lastBackup: null, reviewDismissed: null, changes: 0 });
-      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [] },
+      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [], contracts: {}, wealthHistory: {} },
         'alles gelöscht', { priceKey: null });
       view.importReport = '';
       render();
@@ -1535,6 +1629,22 @@ function bind() {
   });
 
   document.addEventListener('change', async (e) => {
+    if (e.target.id === 'cancel-by') {
+      const merchant = e.target.dataset.merchant;
+      const snap = snapshot();
+      const { [merchant]: _old, ...rest } = state.contracts;
+      state.contracts = e.target.value ? { ...rest, [merchant]: { cancelBy: e.target.value } } : rest;
+      await saveContracts();
+      render();
+      undoable(e.target.value ? `Kündbar bis ${ui.shortDateLabel(e.target.value)} gemerkt` : 'Kündigungsdatum entfernt', snap);
+      return;
+    }
+    if (e.target.id === 'year-cat') {
+      const v = e.target.value;
+      view.yearCat = v === '' ? undefined : v === '__none' ? null : v;
+      render();
+      return;
+    }
     if (e.target.id === 'statement-file') {
       const file = e.target.files[0];
       e.target.value = '';
@@ -1579,6 +1689,7 @@ function bind() {
 
   let qTimer;
   document.addEventListener('input', (e) => {
+    if (e.target.closest?.('#edit-form') && (e.target.name === 'amount' || e.target.name === 'splitAmount')) { updateSplitRest(); return; }
     if (e.target.id !== 'f-query') return;
     clearTimeout(qTimer);
     qTimer = setTimeout(() => {
@@ -1744,10 +1855,20 @@ async function start() {
   }
   state.rules = orderRules((await db.allRules()).map(sanitizeRule).filter(Boolean));
   setCategories(withDefaults(sanitizeCategories(await db.getMeta('categories'))));
+  // Einmalig je Stufe: später mitgelieferte Regeln ergänzen (z. B. Geldautomat → Bargeld), ohne eigene zu überschreiben.
+  const rulesVersion = (await db.getMeta('rulesVersion')) || 1;
+  const added = Object.entries(ADDED_RULES).filter(([v]) => Number(v) > rulesVersion).flatMap(([, ids]) => ids);
+  if (added.length) {
+    const fresh = DEFAULT_RULES.filter((d) => added.includes(d.id) && !state.rules.some((r) => r.id === d.id || r.pattern === d.pattern));
+    if (fresh.length) { state.rules = orderRules([...state.rules, ...fresh]); await db.putRules(fresh); await reapplyRules(); }
+    await db.setMeta('rulesVersion', Math.max(...Object.keys(ADDED_RULES).map(Number)));
+  }
   const storedAccounts = await db.getMeta('accounts');
   state.accounts = sanitizeAccounts(storedAccounts);
   state.positions = sanitizePositions(await db.getMeta('positions'));
   state.transferAsk = openTransferAsks(sanitizeTransferAsk(await db.getMeta('transferAsk')), state.transactions);
+  state.contracts = sanitizeContracts(await db.getMeta('contracts'));
+  state.wealthHistory = sanitizeWealthHistory(await db.getMeta('wealthHistory'));
   // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
   if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
     const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);
@@ -1773,6 +1894,7 @@ async function start() {
     const parts = [n && `${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen`, asked && `${asked} ${asked === 1 ? 'mögliche Umbuchung' : 'mögliche Umbuchungen'} bitte unter „einordnen“ bestätigen`].filter(Boolean);
     if (parts.length) { render(); undoable(parts.join(', '), snap); }
   }
+  recordWealth();
   autoPrices();
   if (!toastAction) askBackup();
   document.addEventListener('visibilitychange', () => {

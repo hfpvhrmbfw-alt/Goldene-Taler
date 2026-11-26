@@ -36,16 +36,26 @@ Unter den Kategorien zeigt die Übersicht den **Jahresblick** (zwölf Monate, an
 wiederkehrende Zahlungen (gleicher Betrag in drei Monaten hintereinander). Ein Händler führt zu all seinen Zahlungen
 mit Summe für das Jahr und insgesamt. In den ersten zehn Tagen eines Monats steht oben ein **Rückblick** auf den Vormonat.
 Buchungen, die keine eigene Ausgabe sind (für andere ausgelegt, Kaution), lassen sich auf **nicht mitzählen** stellen.
+Im Jahresblick lässt sich eine **Kategorie** wählen: dann zeigen die zwölf Balken nur sie.
+
+In jeder Buchung: **auf 12 Monate verteilen** (Jahreskosten wie Versicherung zählen ab dem Monat der Zahlung zu je einem
+Zwölftel in Übersicht, Verlauf, Jahr und Budget), **aufteilen** (bis zu vier Teile in anderen Kategorien, der Rest bleibt
+bei der eigenen; z. B. Drogerie und Haushalt beim selben Einkauf) und **für die Steuer** (Einstellungen › Steuerliste je
+Jahr als Tabelle). Abhebungen am Geldautomaten landen per Regel in **Bargeld**. In der Ansicht eines Händlers lässt sich
+eintragen, bis wann ein Abo oder Vertrag **kündbar** ist; 30 Tage vorher erinnert die Übersicht daran.
 
 **Kategorien** (Einstellungen › Kategorien) lassen sich anlegen, umbenennen, beim Einordnen ausblenden und
 zusammenlegen, auch direkt beim Einordnen mit „+ neue“. Jede hat eine Art: Ausgabe, Einnahme, **gleicht sich aus**
 (z. B. Dienstwagen: Tanken und Kostenabrechnung heben sich auf, zählen nirgends, ein offener Rest steht gelb in der
 Übersicht) oder Sparen. Das **Monatsbudget** ist automatisch (Einnahmen minus Sparpläne des Monats, bis das Gehalt da
-ist die des Vormonats), ein fester Betrag oder aus.
+ist die des Vormonats), ein fester Betrag oder aus. Ausgabe-Kategorien können ein eigenes **Budget im Monat** haben;
+die Übersicht zeigt dann, wie viel davon verbraucht ist, rot wenn es drüber geht.
 
 **Konten** (eigener Reiter): Banken mit ihren Konten, Tagesgeldern und Depots, für ING, Trade Republic und Scalable
 Capital als Vorlage zum Anhaken, jede andere Bank von Hand. Oben steht das **Vermögen** (Konten, Tagesgeld, Depots), Konten
-für jemand anderen (Kinderdepot) stehen dabei, zählen aber nicht mit. Den **Stand** liest Taler aus dem Kontoauszug
+für jemand anderen (Kinderdepot) stehen dabei, zählen aber nicht mit. Beim Öffnen merkt sich Taler den Stand des Monats;
+ab zwei Monaten zeigt ein **Verlauf** die letzten zwölf, gesamt und je Konto. Depots zeigen dazu die **Ausschüttungen** des
+Jahres (Einnahmen mit Dividende, Ausschüttung oder Ertrag im Text bei derselben Bank, oder mit ISIN bzw. Name einer Position). Den **Stand** liest Taler aus dem Kontoauszug
 (Saldo am Ende) oder du trägst ihn ein; Buchungen danach rechnet Taler dazu, bei Konten ohne Auszug die Umbuchungen
 dorthin („geschätzt“). Jede Buchung gehört zu einem Konto (erkannt am Kartennamen, z. B. „ING Visa“ → ING Girokonto),
 Umbuchungen und Sparpläne haben ein Gegenkonto (erkannt am Namen, sonst in der Buchung „an“ wählen). Daraus entstehen
@@ -107,7 +117,10 @@ ES-Module brauchen einen Server, `file://` geht nicht:
 ```
 npx serve .        # oder: python3 -m http.server
 npm test           # Logik-Tests, ohne Abhängigkeiten
+npm run e2e        # Abläufe im Browser, braucht Playwright mit Chromium (PLAYWRIGHT=Pfad, falls woanders installiert)
 ```
+
+Beide laufen bei jedem Pull Request (`.github/workflows/tests.yml`).
 
 Nach jeder Änderung `VERSION` in `sw.js` hochzählen, sonst laden installierte Apps alte Dateien.
 

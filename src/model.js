@@ -7,7 +7,7 @@ export const SCHEMA_VERSION = 1;
 /** Kategorien als stabile IDs. Nie umbenennen, nur ergänzen. Reihenfolge = Anzeige- und Gleichstandsreihenfolge. */
 export const CATEGORY_IDS = [
   'lebensmittel', 'essen', 'mobilitaet', 'shopping', 'drogerie',
-  'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'sonstiges',
+  'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'bargeld', 'sonstiges',
 ];
 
 /** demo = Beispieldaten, lassen sich getrennt entfernen. statement = aus einem Kontoauszug (PDF). */
@@ -69,6 +69,7 @@ export const POSITION_COINS = ['BTC', 'ETH'];
  * @property {string} name
  * @property {'expense'|'income'|'balance'|'saving'} kind
  * @property {boolean} hidden  erscheint nicht mehr als Knopf beim Einordnen
+ * @property {number|null} budgetCents  eigenes Monatsbudget (nur Ausgaben), null = keins
  */
 
 /**
@@ -89,6 +90,9 @@ export const POSITION_COINS = ['BTC', 'ETH'];
  * @property {boolean} excluded     true = zählt in keiner Summe mit (z. B. für andere ausgelegt)
  * @property {string|null} accountId    von Hand gewähltes Konto (sonst erkennt Taler es an der Karte)
  * @property {string|null} toAccountId  von Hand gewähltes Gegenkonto bei Umbuchung oder Sparen
+ * @property {boolean} spread       Jahreskosten: zählt zu je einem Zwölftel in diesem und den elf folgenden Monaten
+ * @property {{categoryId: string, cents: number}[]} splits  Teile in anderen Kategorien (gleiches Vorzeichen wie amountCents); der Rest bleibt bei categoryId
+ * @property {boolean} tax          für die Steuer markiert (Werbungskosten, Spenden …)
  */
 
 /**
@@ -118,8 +122,28 @@ export function emptyTransaction(id, date) {
   return {
     id, date, time: null, amountCents: 0, currency: 'EUR', baseCents: null, merchant: '', card: '',
     categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false, kind: 'expense',
-    accountId: null, toAccountId: null,
+    accountId: null, toAccountId: null, spread: false, splits: [], tax: false,
   };
+}
+
+/** Höchstens so viele Teile pro Buchung. */
+export const MAX_SPLITS = 4;
+
+/** Teile einer Buchung: gültige Kategorie, Betrag mit dem Vorzeichen der Buchung, zusammen nicht mehr als die Buchung. */
+export function sanitizeSplits(raw, amountCents) {
+  if (!Array.isArray(raw) || !amountCents) return [];
+  const sign = Math.sign(amountCents);
+  const out = [];
+  let left = Math.abs(amountCents);
+  for (const p of raw) {
+    if (out.length >= MAX_SPLITS || !p || typeof p !== 'object') continue;
+    const categoryId = str(p.categoryId, 80);
+    const cents = Number.isFinite(p.cents) ? Math.abs(Math.round(p.cents)) : 0;
+    if (!categoryId || !cents || cents >= left) continue;
+    out.push({ categoryId, cents: sign * cents });
+    left -= cents;
+  }
+  return out;
 }
 
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -149,6 +173,9 @@ export function sanitizeTransaction(raw) {
     kind: KINDS.includes(raw.kind) ? raw.kind : 'expense',
     accountId: str(raw.accountId, 80) || null,
     toAccountId: str(raw.toAccountId, 80) || null,
+    spread: raw.spread === true && (KINDS.includes(raw.kind) ? raw.kind : 'expense') === 'expense',
+    splits: sanitizeSplits(raw.splits, Math.round(raw.amountCents)),
+    tax: raw.tax === true,
   };
 }
 
@@ -168,7 +195,10 @@ export function sanitizeCategory(raw) {
   const id = str(raw.id, 80);
   const name = str(raw.name, 40);
   if (!id || !name) return null;
-  return { id, name, kind: CATEGORY_KINDS.includes(raw.kind) ? raw.kind : 'expense', hidden: raw.hidden === true };
+  const kind = CATEGORY_KINDS.includes(raw.kind) ? raw.kind : 'expense';
+  const b = raw.budgetCents;
+  const budgetCents = kind === 'expense' && Number.isFinite(b) && b > 0 ? Math.round(b) : null;
+  return { id, name, kind, hidden: raw.hidden === true, budgetCents };
 }
 
 /** Liste aus dem Speicher oder einer Sicherung; doppelte IDs fallen weg. */
@@ -266,7 +296,33 @@ export function buildExport(state, exportedAt) {
     rules: state.rules,
     deletedIds: state.deletedIds,
     transferAsk: state.transferAsk || [],
+    contracts: state.contracts || {},
+    wealthHistory: state.wealthHistory || {},
   };
+}
+
+/** Verträge je Händler (genauer Name): bis wann kündbar. Ungültige Einträge fallen weg. */
+export function sanitizeContracts(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw).slice(0, 200)) {
+    const merchant = str(k, 200);
+    if (merchant && v && DATE_RE.test(v.cancelBy)) out[merchant] = { cancelBy: v.cancelBy };
+  }
+  return out;
+}
+
+/** Vermögensverlauf: je Monat (YYYY-MM) Summe und Stand je Konto in Cent. */
+export function sanitizeWealthHistory(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [m, v] of Object.entries(raw)) {
+    if (!/^\d{4}-\d{2}$/.test(m) || !v || !Number.isFinite(v.total)) continue;
+    const accounts = {};
+    for (const [id, c] of Object.entries(v.accounts && typeof v.accounts === 'object' ? v.accounts : {})) if (Number.isFinite(c)) accounts[str(id, 80)] = Math.round(c);
+    out[m] = { total: Math.round(v.total), accounts };
+  }
+  return out;
 }
 
 /** Offene Fragen „Umbuchung?“ als Paare von Buchungs-IDs (Ausgabe, Einnahme). */
@@ -297,7 +353,7 @@ export function parseImport(text) {
   const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
   const positions = sanitizePositions(data.positions);
   return {
-    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk),
+    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk), contracts: sanitizeContracts(data.contracts), wealthHistory: sanitizeWealthHistory(data.wealthHistory),
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

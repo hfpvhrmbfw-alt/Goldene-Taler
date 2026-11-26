@@ -11,6 +11,40 @@ export function hashString(s) {
   return h.toString(16).padStart(8, '0');
 }
 
+/**
+ * FNV-1a 64 Bit als Hex: für neue Buchungs-IDs. Bei 32 Bit wären ab etwa 10.000 Buchungen zwei gleiche IDs
+ * (und damit eine still verlorene Buchung) zu ~1 % möglich; bei 64 Bit praktisch nie.
+ */
+export function hashString64(s) {
+  let h = 0xcbf29ce484222325n;
+  for (const ch of new TextEncoder().encode(s)) {
+    h ^= BigInt(ch);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, '0');
+}
+
+/**
+ * IDs für eine Zeile: neu (64 Bit) und die frühere (32 Bit). Gleiche Zeilen bekommen eine laufende Nummer.
+ * `seen` zählt je Zeile mit. Die frühere ID braucht main.js, damit schon eingelesene Buchungen ihre ID behalten.
+ */
+export function rowIds(prefix, key, seen) {
+  const n = seen.get(key) || 0;
+  seen.set(key, n + 1);
+  const suffix = n === 0 ? '' : `-${n}`;
+  return { id: `${prefix}-${hashString64(key)}${suffix}`, legacyId: `${prefix}-${hashString(key)}${suffix}` };
+}
+
+/**
+ * Bekannte Buchungen behalten ihre frühere ID: Ist die alte ID schon da (oder gelöscht), gilt sie, sonst die neue.
+ * Entfernt das Hilfsfeld `legacyId`.
+ * @param {(import('./model.js').Transaction & {legacyId?: string})[]} rows
+ * @param {Set<string>} known  IDs vorhandener und gelöschter Buchungen
+ */
+export function adoptLegacyIds(rows, known) {
+  return rows.map(({ legacyId, ...t }) => (legacyId && known.has(legacyId) ? { ...t, id: legacyId } : t));
+}
+
 const CURRENCY_SIGNS = { '€': 'EUR', '$': 'USD', '£': 'GBP', 'CHF': 'CHF', 'Fr.': 'CHF' };
 
 /**
@@ -141,16 +175,16 @@ export function parseLog(text, defaultCurrency = 'EUR') {
       else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error, text: first.slice(0, 40) });
       return;
     }
-    const base = `sc-${hashString(line)}`;
-    const n = seen.get(base) || 0;
-    seen.set(base, n + 1);
-    transactions.push(sanitizeTransaction({
-      id: n === 0 ? base : `${base}-${n}`,
-      date: r.date, time: r.time, amountCents: r.amountCents,
-      currency: r.currency || defaultCurrency,
-      merchant: r.merchant, card: r.card,
-      categoryId: null, manualCategory: false, note: '', source: 'shortcut',
-    }));
+    const { id, legacyId } = rowIds('sc', line, seen);
+    transactions.push({
+      ...sanitizeTransaction({
+        id, date: r.date, time: r.time, amountCents: r.amountCents,
+        currency: r.currency || defaultCurrency,
+        merchant: r.merchant, card: r.card,
+        categoryId: null, manualCategory: false, note: '', source: 'shortcut',
+      }),
+      legacyId,
+    });
   });
   return { transactions, errors, ignored };
 }
@@ -258,6 +292,57 @@ function kindTotal(list, kind, currency) {
  */
 export const baseAmount = (t, currency = 'EUR') =>
   (t.currency === currency ? t.amountCents : Number.isInteger(t.baseCents) ? t.baseCents : null);
+
+/** Datum `k` Monate später, gleicher Tag, höchstens der letzte des Monats. */
+export function addMonths(date, k) {
+  let y = Number(date.slice(0, 4));
+  let m = Number(date.slice(5, 7)) - 1 + k;
+  y += Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  const month = `${y}-${String(m + 1).padStart(2, '0')}`;
+  return `${month}-${String(Math.min(Number(date.slice(8, 10)), daysInMonth(month))).padStart(2, '0')}`;
+}
+
+/** Betrag in n Teile, Rest auf den ersten: 100 / 12 → 12, 8, 8, … */
+function shares(cents, n) {
+  const each = Math.trunc(cents / n);
+  return Array.from({ length: n }, (_, i) => (i === 0 ? cents - each * (n - 1) : each));
+}
+
+/** Teile einer aufgeteilten Buchung: Rest bei der eigenen Kategorie, jeder Teil in seiner. Euro-Betrag bei Fremdwährung anteilig. */
+function splitPieces(t) {
+  if (!t.splits?.length) return [t];
+  const base = (c) => (Number.isInteger(t.baseCents) && t.amountCents ? Math.round(t.baseCents * c / t.amountCents) : t.baseCents);
+  const parts = t.splits.map((p, i) => ({ ...t, id: `${t.id}#${i + 1}`, categoryId: p.categoryId, amountCents: p.cents, baseCents: base(p.cents), splits: [], part: true }));
+  const rest = t.amountCents - t.splits.reduce((a, p) => a + p.cents, 0);
+  const restBase = Number.isInteger(t.baseCents) ? t.baseCents - parts.reduce((a, p) => a + p.baseCents, 0) : t.baseCents;
+  return [{ ...t, amountCents: rest, baseCents: restBase, splits: [] }, ...parts];
+}
+
+/** Jahreskosten als zwölf Monatsteile ab dem Monat der Zahlung. */
+function spreadPieces(t) {
+  const amounts = shares(t.amountCents, 12);
+  const bases = Number.isInteger(t.baseCents) ? shares(t.baseCents, 12) : null;
+  return amounts.map((c, k) => ({
+    ...t, id: k ? `${t.id}~${k}` : t.id, date: addMonths(t.date, k), amountCents: c, baseCents: bases ? bases[k] : t.baseCents, part: t.part || k > 0,
+  }));
+}
+
+/**
+ * Buchungen, wie sie in den Summen zählen: aufgeteilte Buchungen als Teile je Kategorie, Jahreskosten (`spread`)
+ * als zwölf Monatsteile. Teile tragen `part: true` und zählen nicht als eigene Zahlung. Für Listen gilt weiter das Original.
+ * @param {import('./model.js').Transaction[]} transactions
+ */
+export function forSums(transactions) {
+  const out = [];
+  for (const t of transactions) {
+    if (!t.spread && !t.splits?.length) { out.push(t); continue; }
+    for (const p of splitPieces(t)) {
+      if (t.spread && counts(t)) out.push(...spreadPieces(p)); else out.push(p);
+    }
+  }
+  return out;
+}
 
 /** Gibt es mitgezählte Buchungen vor diesem Monat? Erst dann ist der Monat selbst vollständig erfasst. */
 export function trackedBefore(transactions, month) {
@@ -377,7 +462,7 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
     const k = t.merchant || '';
     const e = byMerchant.get(k) || { merchant: k, cents: 0, count: 0 };
     e.cents += t.amountCents;
-    e.count += 1;
+    if (!t.part) e.count += 1;
     byMerchant.set(k, e);
   }
   const topMerchants = [...byMerchant.values()]
@@ -389,7 +474,7 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
   return {
     month,
     spentCents,
-    count: counted.length,
+    count: counted.filter((t) => !t.part).length,
     previousCents,
     previousComplete: trackedBefore(transactions, prev),
     comparedToDay,
@@ -495,7 +580,7 @@ export function groupByDay(transactions, filter = {}) {
   const list = sortTransactions(transactions).filter((t) =>
     (!filter.month || monthOf(t.date) === filter.month)
     && (!filter.kind || kindOf(t) === filter.kind)
-    && (!cats || !cats.length || cats.includes(t.categoryId))
+    && (!cats || !cats.length || cats.includes(t.categoryId) || (t.splits || []).some((p) => cats.includes(p.categoryId)))
     && (!filter.sources || !filter.sources.length || filter.sources.includes(t.source))
     && (!filter.hideExcluded || !t.excluded)
     && (!filter.merchant || t.merchant === filter.merchant)
@@ -551,7 +636,10 @@ export function categoriesByUse(transactions, categories, kinds) {
 /** Kategorie `from` in `to` aufgehen lassen: Buchungen und Regeln wandern mit. `to` muss dieselbe Art haben (prüft der Aufrufer). */
 export function mergeCategory(transactions, rules, from, to) {
   return {
-    transactions: transactions.map((t) => (t.categoryId === from ? { ...t, categoryId: to } : t)),
+    transactions: transactions.map((t) => {
+      const splits = (t.splits || []).some((p) => p.categoryId === from) ? t.splits.map((p) => (p.categoryId === from ? { ...p, categoryId: to } : p)) : t.splits;
+      return t.categoryId === from || splits !== t.splits ? { ...t, categoryId: t.categoryId === from ? to : t.categoryId, splits } : t;
+    }),
     rules: rules.map((r) => (r.categoryId === from ? { ...r, categoryId: to } : r)),
   };
 }
@@ -721,10 +809,13 @@ export function openTransferAsks(asks, transactions) {
  * @param {import('./model.js').Transaction[]} transactions
  * @param {string} year   YYYY
  * @param {string} today  YYYY-MM-DD
+ * @param {string} currency
+ * @param {string|null} [categoryId]  nur diese Kategorie (null = ohne Kategorie); weggelassen = alle
  * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number, incomeCents: number, savingCents: number,
  *   averageCents: number|null, maxCents: number, previousCents: number|null, comparedTo: string|null}}
  */
-export function yearSummary(transactions, year, today, currency = 'EUR') {
+export function yearSummary(transactions, year, today, currency = 'EUR', categoryId = undefined) {
+  if (categoryId !== undefined) transactions = transactions.filter((t) => (t.categoryId ?? null) === categoryId);
   const months = Array.from({ length: 12 }, (_, i) => ({ month: `${year}-${String(i + 1).padStart(2, '0')}`, cents: 0, count: 0 }));
   const prevYear = String(Number(year) - 1);
   const thisYear = today.slice(0, 4);
@@ -813,7 +904,7 @@ export function monthReview(transactions, month, currency = 'EUR') {
   return {
     month,
     spentCents: inMonth.reduce((s, t) => s + t.amountCents, 0),
-    count: inMonth.length,
+    count: inMonth.filter((t) => !t.part).length,
     previousCents: transactions.filter((t) => counts(t) && monthOf(t.date) === prev)
       .reduce((s, t) => s + (baseAmount(t, currency) ?? 0), 0),
     previousComplete: trackedBefore(transactions, prev),
