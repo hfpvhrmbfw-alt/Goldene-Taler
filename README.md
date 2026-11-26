@@ -17,9 +17,10 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking, auch 
 5. **Kontoauszug einlesen** (Einstellungen): PDF-Kontoauszug von Trade Republic oder ING (Girokonto)
    auswählen. Übernommen wird jede Zeile mit ihrer **Art**: Ausgabe (Karte, Lastschrift, Überweisung, Dauerauftrag),
    Einnahme (Gehalt, Einzahlung, Gutschrift, Zinsen), Sparen (Sparplan, zählt nicht als Ausgabe) oder Umbuchung (zählt
-   nirgends). Umbuchung heißt: gleicher Betrag raus und rein auf zwei Konten, höchstens sieben Tage auseinander (auch
-   Apple-Pay-Zeilen), oder die Gegenseite ist ein **eigenes Konto** (Einstellungen, vorbelegt mit Trade Republic und ING,
-   ergänzbar um Tagesgeld, eigenen Namen oder IBAN; auch aus einer Buchung heraus mit „als eigenes Konto merken“). Die Art lässt sich in jeder
+   nirgends). Umbuchung heißt: die Gegenseite ist ein **eigenes Konto** (Einstellungen, vorbelegt mit Trade Republic und ING,
+   ergänzbar um Tagesgeld, eigenen Namen oder IBAN; auch aus einer Buchung heraus mit „als eigenes Konto merken“), dazu ihr
+   Gegenstück (gleicher Betrag auf einem anderen Konto, höchstens sieben Tage auseinander, auch Apple-Pay-Zeilen). Ein Paar
+   nur aus gleichem Betrag ist unsicher und kommt unter **einordnen** als Frage „Umbuchung?“, bis du ja oder nein sagst. Die Art lässt sich in jeder
    Buchung ändern. Wer Einnahmen hat, sieht oben in der Übersicht, was nach Einnahmen, Ausgaben und Sparen übrig ist.
    Buchungen lassen sich nach Art, Betrag und Datum sortieren und nach Kategorie und Herkunft filtern. Was der Kurzbefehl schon erfasst hat (gleicher Betrag, Auszug höchstens einen Tag
    früher oder fünf Tage später), kommt nicht doppelt, egal in welcher Reihenfolge eingelesen wird. Das PDF liest
@@ -27,7 +28,10 @@ Alle Daten bleiben auf dem Gerät (IndexedDB). Kein Server, kein Tracking, auch 
 
 Die Übersicht zeigt den **Verlauf** des Monats (aufgelaufene Ausgaben Tag für Tag, Vormonat gestrichelt, Budget als Linie;
 antippen oder ziehen zeigt den Stand an einem Tag), darunter die **Kategorien** und **größten Händler** (beide klappbar, der Zustand bleibt gemerkt).
-Einlesen und Sichern stehen unter **Einstellungen**, die Sicherungs-Erinnerung als Punkt am Reiter.
+Einlesen und Sichern stehen unter **Einstellungen**, die Sicherungs-Erinnerung als Punkt am Reiter und einmal am Tag als Hinweis
+mit „jetzt sichern“ (noch nie gesichert, 30 Änderungen seit der letzten Sicherung, oder älter als 30 Tage und seitdem geändert).
+**Sicherung laden** und **Alles löschen** lassen sich rückgängig machen: Der Stand davor bleibt im Speicher und lässt sich unter
+Einstellungen mit „Vorherigen Stand zurückholen“ wiederherstellen.
 Unter den Kategorien zeigt die Übersicht den **Jahresblick** (zwölf Monate, antippbar) und **jeden Monat**
 wiederkehrende Zahlungen (gleicher Betrag in drei Monaten hintereinander). Ein Händler führt zu all seinen Zahlungen
 mit Summe für das Jahr und insgesamt. In den ersten zehn Tagen eines Monats steht oben ein **Rückblick** auf den Vormonat.

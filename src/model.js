@@ -250,7 +250,7 @@ export function sanitizeSettings(raw) {
 }
 
 /**
- * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[], accounts: Account[], positions: Position[]}} state
+ * @param {{transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[], accounts: Account[], positions: Position[], transferAsk?: [string, string][]}} state
  * @param {string} exportedAt ISO-Zeitstempel
  */
 export function buildExport(state, exportedAt) {
@@ -265,13 +265,21 @@ export function buildExport(state, exportedAt) {
     transactions: state.transactions,
     rules: state.rules,
     deletedIds: state.deletedIds,
+    transferAsk: state.transferAsk || [],
   };
+}
+
+/** Offene Fragen „Umbuchung?“ als Paare von Buchungs-IDs (Ausgabe, Einnahme). */
+export function sanitizeTransferAsk(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((p) => Array.isArray(p) && p.length === 2 && p.every((x) => typeof x === 'string' && x && x.length <= 80))
+    .map(([a, b]) => [a, b]);
 }
 
 /**
  * Prüft eine Sicherungsdatei.
  * @param {string} text
- * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, accounts: Account[]|null, positions: Position[], skipped: number}
+ * @returns {{ok: true, transactions: Transaction[], rules: Rule[], settings: Settings, deletedIds: string[], categories: Category[]|null, accounts: Account[]|null, positions: Position[], transferAsk: [string, string][], skipped: number}
  *          | {ok: false, error: 'json'|'app'|'newer'|'shape'}}
  */
 export function parseImport(text) {
@@ -289,7 +297,7 @@ export function parseImport(text) {
   const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
   const positions = sanitizePositions(data.positions);
   return {
-    ok: true, transactions, rules, deletedIds, categories, accounts, positions,
+    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk),
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };
