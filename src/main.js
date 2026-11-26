@@ -7,7 +7,7 @@ import { wealthSnapshot, withSnapshot, accountFor, counterFor, ownNames, stateme
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
-  categoryKind, mergeCategory, isOwnAccountMove, transfersIn, classifyTransfers, recheckTransfers, openTransferAsks, daysBetween,
+  categoryKind, mergeCategory, isOwnAccountMove, transfersIn, adoptLegacyIds, classifyTransfers, recheckTransfers, openTransferAsks, daysBetween,
 } from './logic.js';
 import { parseStatement } from './statement.js';
 import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind, coinUrl, pickCoinQuotes, coinsToFetch, COIN_NAMES } from './prices.js';
@@ -366,7 +366,7 @@ async function recheckOldTransfers() {
 async function importLog(text, { demo = false } = {}) {
   const snap = snapshot();
   const parsed = parseLog(text, state.settings.currency);
-  let incoming = parsed.transactions;
+  let incoming = adoptLegacyIds(parsed.transactions, new Set([...state.transactions.map((t) => t.id), ...state.deletedIds]));
   let dupes = 0;
   if (demo) incoming = incoming.map((t) => ({ ...t, id: t.id.replace(/^sc-/, 'demo-'), source: 'demo' }));
   else ({ incoming, dupes } = withoutCrossDuplicates(incoming));
@@ -409,7 +409,7 @@ async function importStatement(file) {
   const r = parseStatement(pages, state.settings.currency);
   if (!r.ok) { await ask(STATEMENT_ERRORS[r.error], 'OK', { cancel: false }); return; }
   const snap = snapshot();
-  const { incoming: rows, dupes } = withoutCrossDuplicates(r.transactions);
+  const { incoming: rows, dupes } = withoutCrossDuplicates(adoptLegacyIds(r.transactions, new Set([...state.transactions.map((t) => t.id), ...state.deletedIds])));
   // Umbuchungen zwischen eigenen Konten: neue Zeile gegen alle bekannten, auch die älteren bekommen dann die Art „Umbuchung“.
   const { incoming, changed, ask } = markTransfers(rows);
   const byId = new Map(changed.map((t) => [t.id, t]));

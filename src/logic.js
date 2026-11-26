@@ -11,6 +11,40 @@ export function hashString(s) {
   return h.toString(16).padStart(8, '0');
 }
 
+/**
+ * FNV-1a 64 Bit als Hex: für neue Buchungs-IDs. Bei 32 Bit wären ab etwa 10.000 Buchungen zwei gleiche IDs
+ * (und damit eine still verlorene Buchung) zu ~1 % möglich; bei 64 Bit praktisch nie.
+ */
+export function hashString64(s) {
+  let h = 0xcbf29ce484222325n;
+  for (const ch of new TextEncoder().encode(s)) {
+    h ^= BigInt(ch);
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return h.toString(16).padStart(16, '0');
+}
+
+/**
+ * IDs für eine Zeile: neu (64 Bit) und die frühere (32 Bit). Gleiche Zeilen bekommen eine laufende Nummer.
+ * `seen` zählt je Zeile mit. Die frühere ID braucht main.js, damit schon eingelesene Buchungen ihre ID behalten.
+ */
+export function rowIds(prefix, key, seen) {
+  const n = seen.get(key) || 0;
+  seen.set(key, n + 1);
+  const suffix = n === 0 ? '' : `-${n}`;
+  return { id: `${prefix}-${hashString64(key)}${suffix}`, legacyId: `${prefix}-${hashString(key)}${suffix}` };
+}
+
+/**
+ * Bekannte Buchungen behalten ihre frühere ID: Ist die alte ID schon da (oder gelöscht), gilt sie, sonst die neue.
+ * Entfernt das Hilfsfeld `legacyId`.
+ * @param {(import('./model.js').Transaction & {legacyId?: string})[]} rows
+ * @param {Set<string>} known  IDs vorhandener und gelöschter Buchungen
+ */
+export function adoptLegacyIds(rows, known) {
+  return rows.map(({ legacyId, ...t }) => (legacyId && known.has(legacyId) ? { ...t, id: legacyId } : t));
+}
+
 const CURRENCY_SIGNS = { '€': 'EUR', '$': 'USD', '£': 'GBP', 'CHF': 'CHF', 'Fr.': 'CHF' };
 
 /**
@@ -141,16 +175,16 @@ export function parseLog(text, defaultCurrency = 'EUR') {
       else if (r.error !== 'empty') errors.push({ line: i + 1, error: r.error, text: first.slice(0, 40) });
       return;
     }
-    const base = `sc-${hashString(line)}`;
-    const n = seen.get(base) || 0;
-    seen.set(base, n + 1);
-    transactions.push(sanitizeTransaction({
-      id: n === 0 ? base : `${base}-${n}`,
-      date: r.date, time: r.time, amountCents: r.amountCents,
-      currency: r.currency || defaultCurrency,
-      merchant: r.merchant, card: r.card,
-      categoryId: null, manualCategory: false, note: '', source: 'shortcut',
-    }));
+    const { id, legacyId } = rowIds('sc', line, seen);
+    transactions.push({
+      ...sanitizeTransaction({
+        id, date: r.date, time: r.time, amountCents: r.amountCents,
+        currency: r.currency || defaultCurrency,
+        merchant: r.merchant, card: r.card,
+        categoryId: null, manualCategory: false, note: '', source: 'shortcut',
+      }),
+      legacyId,
+    });
   });
   return { transactions, errors, ignored };
 }

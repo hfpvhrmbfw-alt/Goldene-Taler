@@ -167,7 +167,7 @@ test('Katalog: IDs eindeutig, Kategorien gültig', () => {
 });
 
 test('Export/Import: Rundweg, neuere Version abgelehnt, kaputte Einträge übersprungen', () => {
-  const tx = L.parseLog(fx('log.txt')).transactions;
+  const tx = L.adoptLegacyIds(L.parseLog(fx('log.txt')).transactions, new Set());
   const state = { transactions: tx, rules: DEFAULT_RULES, settings: M.sanitizeSettings({ monthlyBudgetCents: 50000 }), deletedIds: ['x'] };
   const json = JSON.stringify(M.buildExport(state, '2026-10-20T12:00:00Z'));
   const r = M.parseImport(json);
@@ -617,4 +617,18 @@ test('Verträge: gültige Daten bleiben, Erinnerung 30 Tage vorher', async () =>
   assert.match(csv[2], /"3000,00"/);
   assert.equal(buildCsv(list, { onlyTax: true }).split('\r\n').length, 2);
   assert.deepEqual(taxYears(list, 'EUR'), [{ year: '2026', count: 1, cents: 1250 }]);
+});
+
+test('IDs: neue mit 64 Bit, schon eingelesene Zeilen behalten ihre frühere ID', () => {
+  assert.equal(L.hashString64('abc'), 'e71fa2190541574b');
+  const text = '2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa\n2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa';
+  const rows = L.parseLog(text).transactions;
+  assert.match(rows[0].id, /^sc-[0-9a-f]{16}$/);
+  assert.equal(rows[1].id, `${rows[0].id}-1`);
+  assert.equal(rows[0].legacyId, `sc-${L.hashString('2026-10-20T08:15:00+02:00;3,45 €;Backwerk;Visa')}`);
+  // Die erste Zeile ist schon unter der alten ID da, die zweite neu
+  const kept = L.adoptLegacyIds(rows, new Set([rows[0].legacyId]));
+  assert.equal(kept[0].id, rows[0].legacyId);
+  assert.equal(kept[1].id, rows[1].id);
+  assert.ok(kept.every((t) => !('legacyId' in t)));
 });
