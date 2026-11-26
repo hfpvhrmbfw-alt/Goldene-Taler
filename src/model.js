@@ -297,6 +297,7 @@ export function buildExport(state, exportedAt) {
     deletedIds: state.deletedIds,
     transferAsk: state.transferAsk || [],
     contracts: state.contracts || {},
+    wealthHistory: state.wealthHistory || {},
   };
 }
 
@@ -307,6 +308,19 @@ export function sanitizeContracts(raw) {
   for (const [k, v] of Object.entries(raw).slice(0, 200)) {
     const merchant = str(k, 200);
     if (merchant && v && DATE_RE.test(v.cancelBy)) out[merchant] = { cancelBy: v.cancelBy };
+  }
+  return out;
+}
+
+/** Vermögensverlauf: je Monat (YYYY-MM) Summe und Stand je Konto in Cent. */
+export function sanitizeWealthHistory(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [m, v] of Object.entries(raw)) {
+    if (!/^\d{4}-\d{2}$/.test(m) || !v || !Number.isFinite(v.total)) continue;
+    const accounts = {};
+    for (const [id, c] of Object.entries(v.accounts && typeof v.accounts === 'object' ? v.accounts : {})) if (Number.isFinite(c)) accounts[str(id, 80)] = Math.round(c);
+    out[m] = { total: Math.round(v.total), accounts };
   }
   return out;
 }
@@ -339,7 +353,7 @@ export function parseImport(text) {
   const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
   const positions = sanitizePositions(data.positions);
   return {
-    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk), contracts: sanitizeContracts(data.contracts),
+    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk), contracts: sanitizeContracts(data.contracts), wealthHistory: sanitizeWealthHistory(data.wealthHistory),
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

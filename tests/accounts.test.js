@@ -168,3 +168,29 @@ test('depotPlans: Sparpläne je ISIN mit letztem Betrag und Stück', () => {
   ]);
   assert.deepEqual(A.depotPlans(ACCOUNTS[5], DATA, ACCOUNTS), []);
 });
+
+test('Vermögensverlauf: Monatswert überschreibt, unverändert bleibt dasselbe Objekt, höchstens 36 Monate', () => {
+  let h = A.withSnapshot({}, '2026-10', { total: 100, accounts: { a: 100 } });
+  h = A.withSnapshot(h, '2026-11', { total: 150, accounts: { a: 150 } });
+  assert.equal(A.withSnapshot(h, '2026-11', { total: 150, accounts: { a: 150 } }), h);
+  h = A.withSnapshot(h, '2026-11', { total: 170, accounts: { a: 170 } });
+  assert.deepEqual(A.historyOf(h), [{ month: '2026-10', cents: 100 }, { month: '2026-11', cents: 170 }]);
+  assert.deepEqual(A.historyOf(h, 'a').map((x) => x.cents), [100, 170]);
+  let big = {};
+  for (let i = 0; i < 40; i++) big = A.withSnapshot(big, `20${String(20 + Math.floor(i / 12)).padStart(2, '0')}-${String((i % 12) + 1).padStart(2, '0')}`, { total: i, accounts: {} });
+  assert.equal(Object.keys(big).length, 36);
+});
+
+test('Ausschüttungen: Einnahme mit Dividenden-Text auf Konto derselben Bank oder mit ISIN der Position', () => {
+  const accounts = [
+    sanitizeAccount({ id: 'tr', bank: 'Trade Republic', name: 'Konto', type: 'konto', match: ['Trade Republic'] }),
+    sanitizeAccount({ id: 'trd', bank: 'Trade Republic', name: 'Depot', type: 'depot' }),
+    sanitizeAccount({ id: 'ing', bank: 'ING', name: 'Girokonto', type: 'konto', match: ['ING'] }),
+  ];
+  const positions = [{ id: 'p', accountId: 'trd', name: 'MSCI World', isin: 'IE00B4L5Y983', kind: 'etf', unitsMicro: 0, costCents: 0, date: '2026-01-01', priceCents: null, priceDate: null, plan: false, coin: '' }];
+  const t = (id, merchant, card, cents) => sanitizeTransaction({ id, date: '2026-06-01', amountCents: cents, merchant, card, kind: 'income', source: 'statement' });
+  const list = [t('a', 'Ausschüttung Vanguard', 'Trade Republic', -1234), t('b', 'Ertrag IE00B4L5Y983', 'ING', -500), t('c', 'Dividende Allianz', 'ING', -900), t('d', 'Gehalt', 'Trade Republic', -300000)];
+  const r = A.dividendsOf(accounts[1], positions, list, accounts, '2026');
+  assert.deepEqual(r.items.map((x) => x.id).sort(), ['a', 'b']);
+  assert.equal(r.cents, 1734);
+});

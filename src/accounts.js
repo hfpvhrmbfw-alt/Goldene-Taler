@@ -302,3 +302,56 @@ export function depotPlans(a, transactions, accounts) {
   }
   return [...map.values()].sort((x, y) => y.lastCents - x.lastCents);
 }
+
+/**
+ * Stand für den Verlauf: Vermögen gesamt und je Konto (nur Konten mit Stand). Für die Monatswerte in `withSnapshot`.
+ * @returns {{total: number, accounts: Record<string, number>}}
+ */
+export function wealthSnapshot(accounts, transactions, currency = 'EUR', positions = []) {
+  const w = wealth(accounts, transactions, currency, positions);
+  const out = {};
+  for (const g of w.banks) for (const { account, balance } of g.items) if (balance) out[account.id] = balance.cents;
+  return { total: w.totalCents, accounts: out };
+}
+
+/** Verlauf mit dem Stand dieses Monats (überschreibt den bisherigen Wert des Monats), höchstens 36 Monate. Unverändert = dasselbe Objekt. */
+export function withSnapshot(history, month, snap) {
+  const h = history && typeof history === 'object' ? history : {};
+  if (JSON.stringify(h[month]) === JSON.stringify(snap)) return h;
+  const next = { ...h, [month]: snap };
+  const keep = Object.keys(next).sort().slice(-36);
+  return Object.fromEntries(keep.map((m) => [m, next[m]]));
+}
+
+/** Monatswerte für ein Konto (`id`) oder gesamt (null), älteste zuerst, nur Monate mit Wert. */
+export function historyOf(history, id = null) {
+  return Object.keys(history || {}).sort()
+    .map((month) => ({ month, cents: id ? history[month]?.accounts?.[id] : history[month]?.total }))
+    .filter((x) => Number.isFinite(x.cents));
+}
+
+const DIVIDEND_RE = /dividende|aussch(ü|ue)ttung|ertrag|ertr(ä|ae)gnis|distribution|zinsen aus wertpapier/i;
+
+/**
+ * Ausschüttungen und Dividenden eines Depots in einem Jahr: Einnahmen auf einem Konto derselben Bank, deren Text nach
+ * Dividende oder Ausschüttung klingt oder eine ISIN bzw. den Namen einer Position des Depots nennt.
+ * @returns {{cents: number, items: Transaction[]}}  neueste zuerst
+ */
+export function dividendsOf(a, positions, transactions, accounts, year, currency = 'EUR') {
+  const own = positions.filter((p) => p.accountId === a.id);
+  const names = own.flatMap((p) => [p.isin, p.name].filter((x) => x && x.length >= 4).map((x) => x.toLowerCase()));
+  const items = [];
+  let cents = 0;
+  for (const t of sortTransactions(transactions)) {
+    if (t.source === 'demo' || t.excluded || kindOf(t) !== 'income' || !t.date.startsWith(year)) continue;
+    const acc = accountFor(t, accounts);
+    const text = (t.merchant || '').toLowerCase();
+    const named = names.some((n) => text.includes(n));
+    if (!named && !(DIVIDEND_RE.test(text) && acc && acc.bank === a.bank)) continue;
+    const v = baseAmount(t, currency);
+    if (v === null) continue;
+    cents -= v;
+    items.push(t);
+  }
+  return { cents, items };
+}

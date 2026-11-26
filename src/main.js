@@ -1,9 +1,9 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, sanitizeContracts, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, sanitizeContracts, sanitizeWealthHistory, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
-import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
+import { wealthSnapshot, withSnapshot, accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
   parseLog, parseAmount, applyRules, mergeTransactions, orderRules, upsertRule, editRule, categorize, suggestPattern,
   sortTransactions, monthOf, findCrossDuplicates, findTransfers, categoriesByUse, ruleDefault, needsCategory, kindOf, groupByDay,
@@ -29,7 +29,7 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [], contracts: {} };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [], contracts: {}, wealthHistory: {} };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
@@ -108,8 +108,18 @@ const TABS = { overview: 'Übersicht', list: 'Buchungen', accounts: 'Konten', ac
 const NAV_TAB = { rules: 'settings', categories: 'settings', account: 'accounts' };
 const BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
+/** Vermögen dieses Monats für den Verlauf merken (überschreibt den Wert des Monats, schreibt nur bei Änderung). */
+function recordWealth() {
+  if (!state.accounts.length) return;
+  const next = withSnapshot(state.wealthHistory, clock().month, wealthSnapshot(state.accounts, state.transactions, state.settings.currency, state.positions));
+  if (next === state.wealthHistory) return;
+  state.wealthHistory = next;
+  db.setMeta('wealthHistory', next).catch(() => {});
+}
+
 function render() {
   const c = clock();
+  if (view.tab === 'accounts' || view.tab === 'account') recordWealth();
   const el = $(`#view-${view.tab}`);
   if (view.tab === 'overview') ui.renderOverview(el, state, view, c, info);
   if (view.tab === 'list') ui.renderList(el, state, view, c);
@@ -460,6 +470,7 @@ async function replaceAll(r, label, keep = {}) {
   state.positions = r.positions;
   state.transferAsk = openTransferAsks(r.transferAsk, state.transactions);
   state.contracts = r.contracts || {};
+  state.wealthHistory = r.wealthHistory || {};
   view.budgetShow = null;
   if ('priceKey' in keep) { info.priceKey = keep.priceKey; info.priceFetch = null; }
   await saveTransactions(state.transactions);
@@ -469,6 +480,7 @@ async function replaceAll(r, label, keep = {}) {
   await savePositions();
   await saveAsks();
   await saveContracts();
+  await db.setMeta('wealthHistory', state.wealthHistory);
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
@@ -1572,7 +1584,7 @@ function bind() {
     if (act === 'restore-previous') await restorePrevious();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten, der jetzige Stand lässt sich danach in den Einstellungen zurückholen.', 'Alles löschen', { danger: true })) {
       Object.assign(info, { lastImport: null, lastBackup: null, reviewDismissed: null, changes: 0 });
-      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [], contracts: {} },
+      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [], contracts: {}, wealthHistory: {} },
         'alles gelöscht', { priceKey: null });
       view.importReport = '';
       render();
@@ -1856,6 +1868,7 @@ async function start() {
   state.positions = sanitizePositions(await db.getMeta('positions'));
   state.transferAsk = openTransferAsks(sanitizeTransferAsk(await db.getMeta('transferAsk')), state.transactions);
   state.contracts = sanitizeContracts(await db.getMeta('contracts'));
+  state.wealthHistory = sanitizeWealthHistory(await db.getMeta('wealthHistory'));
   // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
   if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
     const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);
@@ -1881,6 +1894,7 @@ async function start() {
     const parts = [n && `${n} ${n === 1 ? 'Buchung ist' : 'Buchungen sind'} jetzt Umbuchungen`, asked && `${asked} ${asked === 1 ? 'mögliche Umbuchung' : 'mögliche Umbuchungen'} bitte unter „einordnen“ bestätigen`].filter(Boolean);
     if (parts.length) { render(); undoable(parts.join(', '), snap); }
   }
+  recordWealth();
   autoPrices();
   if (!toastAction) askBackup();
   document.addEventListener('visibilitychange', () => {

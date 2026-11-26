@@ -3,7 +3,7 @@ import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
   yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks, forSums, counts,
 } from './logic.js';
-import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
+import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans, historyOf, dividendsOf } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
 import { PRICE_SOURCE, PRICE_KEY_URL } from './prices.js';
 import { CATEGORY_GROUPS, CATEGORY_KIND_NAMES, KIND_LABELS, UNCATEGORIZED, MONTHS, WEEKDAYS, LOG_ERRORS, BANK_LABELS, ACCOUNT_TYPE_LABELS, POSITION_KIND_LABELS } from './texts.js';
@@ -882,6 +882,7 @@ export function renderAccounts(el, state, view, clock) {
     html += '</ul>';
   }
   html += `<ul class="list">${item({ tag: 'button', attrs: 'data-act="template"', title: '<span class="addtext">+ konto oder depot</span>' })}</ul>`;
+  html += historyBlock(state.wealthHistory, null, cur, clock.month, 'verlauf');
   const flows = monthFlows(state.transactions, accounts, clock.month, cur);
   if (flows.length) {
     const label = (a) => (a ? esc(accountLabel(a)) : 'unbekanntes Konto');
@@ -897,6 +898,30 @@ export function renderAccounts(el, state, view, clock) {
   el.innerHTML = html;
 }
 
+/**
+ * Verlauf über die letzten zwölf Monate als Balken (Stand je Monat, wie Taler ihn beim Öffnen gemerkt hat).
+ * Erst ab zwei Monaten mit Wert; Monate ohne Wert bleiben leer.
+ */
+function historyBlock(history, id, cur, month, title) {
+  const points = historyOf(history, id);
+  if (points.length < 2) return '';
+  const byMonth = new Map(points.map((p) => [p.month, p.cents]));
+  const months = [];
+  for (let m = month, i = 0; i < 12; i++, m = previousMonth(m)) months.unshift(m);
+  const max = Math.max(1, ...months.map((m) => byMonth.get(m) ?? 0));
+  const first = points[0].cents;
+  const last = points[points.length - 1].cents;
+  const label = `${title}: ${months.filter((m) => byMonth.has(m)).map((m) => `${monthName(m)} ${money(byMonth.get(m), cur)}`).join(', ')}`;
+  const bars = months.map((m) => {
+    const v = byMonth.get(m);
+    const h = v !== undefined ? Math.max(0, v) / max : 0;
+    return `<div class="ybar${m === month ? ' on' : ''}"><span class="col"><i style="height:${(h * 100).toFixed(1)}%"></i></span><span class="lbl">${MONTH_INITIALS[Number(m.slice(5, 7)) - 1]}</span></div>`;
+  }).join('');
+  return `${head(title)}<div class="year">
+    <div class="yearhead"><span class="sub">${esc(`${signed(last - first, cur)} seit ${monthLabel(points[0].month).toLowerCase()}`)}</span></div>
+    <div class="ybars static" role="img" aria-label="${esc(label)}">${bars}</div></div>`;
+}
+
 /** Ein Konto: Stand, beim Eingangskonto „frei für den Monat“, Fixkosten, Weiterleitungen, Aktionen. */
 export function renderAccount(el, state, view, clock, info = {}) {
   const cur = state.settings.currency;
@@ -908,7 +933,8 @@ export function renderAccount(el, state, view, clock, info = {}) {
   let html = `<h2 class="bigtitle asis">${esc(a.name)}</h2><p class="meta-line">${esc(meta)}</p>
   <div class="kpis"><div class="kpi hero"><div class="cap">${a.type === 'depot' ? 'wert' : 'stand'}</div><div class="v"${b ? ` ${counting(`stand-${a.id}`, b.cents, 'hero')}` : ''}>${b ? moneyHero(b.cents, cur) : '—'}</div>
     <div class="sub">${d && d.costCents ? `<span class="${d.gainCents >= 0 ? 'gain' : 'loss'}">${signed(d.gainCents, cur)} (${gainPct(d.gainCents, d.costCents).replace(/<[^>]+>/g, '')})</span> seit Kauf · ` : ''}${esc(balanceSource(b, a))}${b && a.rateBp ? ` · ≈ ${money(monthlyInterest(b.cents, a.rateBp), cur)} Zinsen im Monat` : ''}</div></div></div>`;
-  if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info);
+  if (a.type === 'depot') html += depotBlocks(a, d, state, cur, info, clock);
+  html += historyBlock(state.wealthHistory, a.id, cur, clock.month, 'verlauf');
   const label = (x) => (x ? esc(accountLabel(x)) : 'unbekanntes Konto');
   let onward = [];
   if (a.main) {
@@ -986,7 +1012,7 @@ function priceKeyBlock(info, today) {
 }
 
 /** Depot: Positionen, Sparpläne aus dem Auszug, Kurse. */
-function depotBlocks(a, d, state, cur, info) {
+function depotBlocks(a, d, state, cur, info, clock) {
   const online = !!info.priceKey;
   // Datum nur dort zeigen, wo ein Kurs älter ist als die anderen.
   const newest = (d ? d.items : []).reduce((m, x) => (x.position.priceDate > m ? x.position.priceDate : m), '');
@@ -1001,6 +1027,14 @@ function depotBlocks(a, d, state, cur, info) {
   }
   html += item({ tag: 'button', attrs: `data-act="new-position" data-account="${esc(a.id)}"`, title: '<span class="addtext">+ aktie, etf oder krypto eintragen</span>' });
   html += '</ul>';
+  const year = clock.today.slice(0, 4);
+  const div = dividendsOf(a, state.positions, state.transactions, state.accounts, year, cur);
+  if (div.items.length) {
+    html += `${head(`ausschüttungen ${year}`)}<ul class="list">
+      ${div.items.slice(0, 5).map((t) => item({ tag: 'button', attrs: `data-act="edit" data-id="${esc(t.id)}"`, title: esc(t.merchant), sub: esc(shortDate(t.date)), n: `<span class="in">+${money(-(t.currency === cur ? t.amountCents : t.baseCents), cur)}</span>` })).join('')}
+      ${item({ cls: 'sum', title: `zusammen ${year}`, sub: plural(div.items.length, 'Zahlung', 'Zahlungen'), n: `<span class="in">+${money(div.cents, cur)}</span>` })}
+    </ul>`;
+  }
   const plans = depotPlans(a, state.transactions, state.accounts);
   if (plans.length) {
     html += `${head('sparpläne · aus dem kontoauszug')}<ul class="list">`;
