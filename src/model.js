@@ -7,7 +7,7 @@ export const SCHEMA_VERSION = 1;
 /** Kategorien als stabile IDs. Nie umbenennen, nur ergänzen. Reihenfolge = Anzeige- und Gleichstandsreihenfolge. */
 export const CATEGORY_IDS = [
   'lebensmittel', 'essen', 'mobilitaet', 'shopping', 'drogerie',
-  'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'sonstiges',
+  'haushalt', 'gesundheit', 'freizeit', 'abos', 'reisen', 'bargeld', 'sonstiges',
 ];
 
 /** demo = Beispieldaten, lassen sich getrennt entfernen. statement = aus einem Kontoauszug (PDF). */

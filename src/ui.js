@@ -627,6 +627,7 @@ export function renderSettings(el, state, view, info, clock) {
   <ul class="list">
     ${item({ tag: 'button', cls: backupDue(state, info, clock.today) ? 'open' : '', attrs: 'data-act="export-json"', title: 'Sicherung speichern', sub: `${backupLabel(info, clock.today)} · für Regeln und Notizen`, n: 'json' })}
     ${item({ tag: 'button', attrs: 'data-act="export-csv"', title: 'Tabelle für Numbers oder Excel', n: 'csv' })}
+    ${taxYears(state.transactions, state.settings.currency).map((y) => item({ tag: 'button', attrs: `data-act="export-tax" data-year="${y.year}"`, title: `Steuerliste ${y.year}`, sub: `${plural(y.count, 'Buchung', 'Buchungen')} für die Steuer · ${money(y.cents, state.settings.currency)}`, n: 'csv' })).join('')}
     <li><label class="item" for="backup-file"><span class="t"><b>Sicherung laden</b><span>ersetzt den aktuellen Stand</span></span><span class="chev" aria-hidden="true">›</span></label></li>
     ${info.previous ? item({ tag: 'button', attrs: 'data-act="restore-previous"', title: 'Vorherigen Stand zurückholen', sub: `vor „${esc(info.previous.label)}“ am ${esc(dateTimeLabel(info.previous.at))}`, chev: true }) : ''}
   </ul>
@@ -738,14 +739,43 @@ export function statementReportHtml(bank, added, known, dupes, kinds, errors) {
   return html;
 }
 
-/** CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. */
-export function buildCsv(transactions) {
-  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', 'Kategorie', 'Karte', 'Notiz', 'Mitgezählt', 'Art'].map(q).join(';')];
+/** Jahre mit Buchungen „für die Steuer“, neuestes zuerst, mit Anzahl und Summe (Ausgaben positiv). */
+export function taxYears(transactions, currency) {
+  const map = new Map();
   for (const t of transactions) {
-    lines.push([t.date, t.time || '', t.merchant, amountInput(t.amountCents), t.currency, catLabel(t.categoryId), t.card, t.note, t.excluded ? 'nein' : 'ja', KIND_LABELS[kindOf(t)]].map(q).join(';'));
+    if (!t.tax || t.source === 'demo') continue;
+    const y = t.date.slice(0, 4);
+    const e = map.get(y) || { year: y, count: 0, cents: 0 };
+    const v = t.currency === currency ? t.amountCents : t.baseCents;
+    e.count += 1;
+    if (Number.isInteger(v)) e.cents += v;
+    map.set(y, e);
   }
-  return '﻿' + lines.join('\r\n');
+  return [...map.values()].sort((a, b) => (a.year < b.year ? 1 : -1));
+}
+
+/**
+ * CSV mit Semikolon und deutschem Komma, damit Numbers und Excel (de) es direkt öffnen. Ohne Beispieldaten.
+ * Beträge wie auf dem Kontoauszug: Ausgaben minus, Einnahmen plus. „Betrag EUR“ ist bei Fremdwährung der abgerechnete Betrag
+ * (leer, wenn er fehlt). Aufgeteilte Buchungen nennen ihre Teile in „Teile“.
+ * @param {object[]} transactions
+ * @param {{accounts?: object[], currency?: string, onlyTax?: boolean}} [opts]
+ */
+export function buildCsv(transactions, { accounts = [], currency = 'EUR', onlyTax = false } = {}) {
+  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const lines = [['Datum', 'Uhrzeit', 'Händler', 'Betrag', 'Währung', `Betrag ${currency}`, 'Kategorie', 'Teile', 'Art', 'Konto', 'Karte', 'Notiz', 'Mitgezählt', 'Auf 12 Monate', 'Steuer']
+    .map(q).join(';')];
+  for (const t of transactions) {
+    if (t.source === 'demo' || (onlyTax && !t.tax)) continue;
+    const base = t.currency === currency ? t.amountCents : t.baseCents;
+    const acc = accountFor(t, accounts);
+    lines.push([
+      t.date, t.time || '', t.merchant, amountInput(-t.amountCents), t.currency, Number.isInteger(base) ? amountInput(-base) : '',
+      catLabel(t.categoryId), (t.splits || []).map((p) => `${catLabel(p.categoryId)} ${amountInput(-p.cents)}`).join(', '),
+      KIND_LABELS[kindOf(t)], acc ? accountLabel(acc) : '', t.card, t.note, t.excluded ? 'nein' : 'ja', t.spread ? 'ja' : '', t.tax ? 'ja' : '',
+    ].map(q).join(';'));
+  }
+  return '\ufeff' + lines.join('\r\n');
 }
 
 // ---------- Konten ----------

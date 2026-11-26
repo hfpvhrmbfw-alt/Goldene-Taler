@@ -12,7 +12,7 @@ import {
 import { parseStatement } from './statement.js';
 import { searchUrl, pickQuote, isinsToFetch, applyQuotes, failureKind, coinUrl, pickCoinQuotes, coinsToFetch, COIN_NAMES } from './prices.js';
 import { pdfPages } from './pdf.js';
-import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES } from './catalog.js';
+import { DEFAULT_RULES, DEFAULT_CATEGORIES, BANK_TEMPLATES, ADDED_RULES } from './catalog.js';
 import { IMPORT_ERRORS, STATEMENT_ERRORS, CATEGORY_GROUPS } from './texts.js';
 import * as ui from './ui.js';
 import * as motion from './motion.js';
@@ -1553,7 +1553,12 @@ function bind() {
     if (act === 'restore-std') await restoreDefaultRules();
     if (act === 'demo') await importLog(demoLog(), { demo: true });
     if (act === 'demo-remove') await removeDemo();
-    if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions), 'text/csv;charset=utf-8');
+    if (act === 'export-csv') await saveFile(`taler-${clock().today}.csv`, ui.buildCsv(state.transactions, { accounts: state.accounts, currency: state.settings.currency }), 'text/csv;charset=utf-8');
+    if (act === 'export-tax') {
+      const year = b.dataset.year;
+      const list = state.transactions.filter((t) => t.date.startsWith(year));
+      await saveFile(`taler-steuer-${year}.csv`, ui.buildCsv(list, { accounts: state.accounts, currency: state.settings.currency, onlyTax: true }), 'text/csv;charset=utf-8');
+    }
     if (act === 'export-json') await saveBackup();
     if (act === 'restore-previous') await restorePrevious();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten, der jetzige Stand lässt sich danach in den Einstellungen zurückholen.', 'Alles löschen', { danger: true })) {
@@ -1819,6 +1824,14 @@ async function start() {
   }
   state.rules = orderRules((await db.allRules()).map(sanitizeRule).filter(Boolean));
   setCategories(withDefaults(sanitizeCategories(await db.getMeta('categories'))));
+  // Einmalig je Stufe: später mitgelieferte Regeln ergänzen (z. B. Geldautomat → Bargeld), ohne eigene zu überschreiben.
+  const rulesVersion = (await db.getMeta('rulesVersion')) || 1;
+  const added = Object.entries(ADDED_RULES).filter(([v]) => Number(v) > rulesVersion).flatMap(([, ids]) => ids);
+  if (added.length) {
+    const fresh = DEFAULT_RULES.filter((d) => added.includes(d.id) && !state.rules.some((r) => r.id === d.id || r.pattern === d.pattern));
+    if (fresh.length) { state.rules = orderRules([...state.rules, ...fresh]); await db.putRules(fresh); await reapplyRules(); }
+    await db.setMeta('rulesVersion', Math.max(...Object.keys(ADDED_RULES).map(Number)));
+  }
   const storedAccounts = await db.getMeta('accounts');
   state.accounts = sanitizeAccounts(storedAccounts);
   state.positions = sanitizePositions(await db.getMeta('positions'));
