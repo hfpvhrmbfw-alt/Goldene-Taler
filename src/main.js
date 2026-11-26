@@ -625,7 +625,7 @@ function updateSplitRest() {
   if (!parts?.length || !amount) { p.hidden = true; return; }
   const rest = Math.abs(amount.cents) - parts.reduce((a, x) => a + x.cents, 0);
   p.hidden = false;
-  p.textContent = rest > 0 ? `Rest bei ${ui.catLabel(f.categoryId.value || null)}: ${ui.amountInput(rest)}` : 'Die Teile sind zusammen so groß wie die ganze Buchung oder größer.';
+  p.textContent = rest > 0 ? `Rest bei ${ui.catLabel(f.categoryId.value || null)}: ${ui.money(rest, amount.currency || view.editing.currency)}` : 'Die Teile sind zusammen so groß wie die ganze Buchung oder größer.';
 }
 
 function openEditor(id) {

@@ -908,13 +908,18 @@ function historyBlock(history, id, cur, month, title) {
   const byMonth = new Map(points.map((p) => [p.month, p.cents]));
   const months = [];
   for (let m = month, i = 0; i < 12; i++, m = previousMonth(m)) months.unshift(m);
-  const max = Math.max(1, ...months.map((m) => byMonth.get(m) ?? 0));
+  // Achse ab knapp unter dem kleinsten Wert, sonst sähen alle Balken gleich aus (die Zahl darüber nennt die Änderung).
+  const vals = points.map((p) => p.cents);
+  const hi = Math.max(1, ...vals);
+  const mn = Math.min(...vals);
+  const lo = hi > mn ? Math.max(0, mn - (hi - mn)) : 0;
+  const max = hi - lo || 1;
   const first = points[0].cents;
   const last = points[points.length - 1].cents;
   const label = `${title}: ${months.filter((m) => byMonth.has(m)).map((m) => `${monthName(m)} ${money(byMonth.get(m), cur)}`).join(', ')}`;
   const bars = months.map((m) => {
     const v = byMonth.get(m);
-    const h = v !== undefined ? Math.max(0, v) / max : 0;
+    const h = v !== undefined ? Math.max(0.04, (Math.max(0, v) - lo) / max) : 0;
     return `<div class="ybar${m === month ? ' on' : ''}"><span class="col"><i style="height:${(h * 100).toFixed(1)}%"></i></span><span class="lbl">${MONTH_INITIALS[Number(m.slice(5, 7)) - 1]}</span></div>`;
   }).join('');
   return `${head(title)}<div class="year">
