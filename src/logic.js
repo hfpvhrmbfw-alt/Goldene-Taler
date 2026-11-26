@@ -462,7 +462,7 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
     const k = t.merchant || '';
     const e = byMerchant.get(k) || { merchant: k, cents: 0, count: 0 };
     e.cents += t.amountCents;
-    e.count += 1;
+    if (!t.part) e.count += 1;
     byMerchant.set(k, e);
   }
   const topMerchants = [...byMerchant.values()]
