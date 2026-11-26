@@ -89,6 +89,9 @@ export const POSITION_COINS = ['BTC', 'ETH'];
  * @property {boolean} excluded     true = zählt in keiner Summe mit (z. B. für andere ausgelegt)
  * @property {string|null} accountId    von Hand gewähltes Konto (sonst erkennt Taler es an der Karte)
  * @property {string|null} toAccountId  von Hand gewähltes Gegenkonto bei Umbuchung oder Sparen
+ * @property {boolean} spread       Jahreskosten: zählt zu je einem Zwölftel in diesem und den elf folgenden Monaten
+ * @property {{categoryId: string, cents: number}[]} splits  Teile in anderen Kategorien (gleiches Vorzeichen wie amountCents); der Rest bleibt bei categoryId
+ * @property {boolean} tax          für die Steuer markiert (Werbungskosten, Spenden …)
  */
 
 /**
@@ -118,8 +121,28 @@ export function emptyTransaction(id, date) {
   return {
     id, date, time: null, amountCents: 0, currency: 'EUR', baseCents: null, merchant: '', card: '',
     categoryId: null, manualCategory: false, note: '', source: 'manual', excluded: false, kind: 'expense',
-    accountId: null, toAccountId: null,
+    accountId: null, toAccountId: null, spread: false, splits: [], tax: false,
   };
+}
+
+/** Höchstens so viele Teile pro Buchung. */
+export const MAX_SPLITS = 4;
+
+/** Teile einer Buchung: gültige Kategorie, Betrag mit dem Vorzeichen der Buchung, zusammen nicht mehr als die Buchung. */
+export function sanitizeSplits(raw, amountCents) {
+  if (!Array.isArray(raw) || !amountCents) return [];
+  const sign = Math.sign(amountCents);
+  const out = [];
+  let left = Math.abs(amountCents);
+  for (const p of raw) {
+    if (out.length >= MAX_SPLITS || !p || typeof p !== 'object') continue;
+    const categoryId = str(p.categoryId, 80);
+    const cents = Number.isFinite(p.cents) ? Math.abs(Math.round(p.cents)) : 0;
+    if (!categoryId || !cents || cents >= left) continue;
+    out.push({ categoryId, cents: sign * cents });
+    left -= cents;
+  }
+  return out;
 }
 
 const str = (v, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -149,6 +172,9 @@ export function sanitizeTransaction(raw) {
     kind: KINDS.includes(raw.kind) ? raw.kind : 'expense',
     accountId: str(raw.accountId, 80) || null,
     toAccountId: str(raw.toAccountId, 80) || null,
+    spread: raw.spread === true && (KINDS.includes(raw.kind) ? raw.kind : 'expense') === 'expense',
+    splits: sanitizeSplits(raw.splits, Math.round(raw.amountCents)),
+    tax: raw.tax === true,
   };
 }
 

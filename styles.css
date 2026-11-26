@@ -292,6 +292,9 @@ body::before { content:""; position:fixed; inset:0 0 auto; height:env(safe-area-
 .stack { display:grid; gap:var(--s4); }
 .two { display:grid; grid-template-columns:1fr 1fr; gap:var(--s3); }
 .two > * { min-width:0; }
+.splitrow { grid-template-columns:1fr 1fr auto; align-items:end; margin-bottom:var(--s2); }
+.splitrow .textbtn { min-height:var(--tap, 44px); }
+#split-box { margin:calc(var(--s2) * -1) 0 var(--s2); }
 .field > span { color:var(--muted); }
 .field input, .field select { width:100%; min-width:0; }
 .field select:focus { outline:none; border-bottom-color:var(--accent-text); }
@@ -394,6 +397,8 @@ label.item { cursor:pointer; }
 .yearhead { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--s1) var(--s3); margin-bottom:var(--s3); }
 .yearhead .v { font:var(--title-weight) calc(24*var(--u))/1.15 var(--font-title); font-variant-numeric:tabular-nums; }
 .yearhead .sub { font-size:calc(13*var(--u)); color:var(--muted); }
+.yearcat { display:block; margin-bottom:var(--s3); }
+.yearcat select { font:calc(15*var(--u)) var(--font-body); padding:8px var(--s3); background:var(--surface); color:var(--ink); border:1px solid var(--line); border-radius:var(--r-control); min-height:var(--tap, 44px); max-width:100%; }
 .ybars { display:grid; grid-template-columns:repeat(12, 1fr); gap:2px; }
 .ybar { display:flex; flex-direction:column; align-items:stretch; gap:var(--s1); min-height:var(--tap); padding:0; border:0; background:transparent; color:var(--muted); font:400 calc(12*var(--u))/1 var(--font-label); cursor:pointer; border-radius:var(--r-control-s); }
 .ybar:disabled { cursor:default; color:var(--faint); }

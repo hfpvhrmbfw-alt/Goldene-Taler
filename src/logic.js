@@ -259,6 +259,57 @@ function kindTotal(list, kind, currency) {
 export const baseAmount = (t, currency = 'EUR') =>
   (t.currency === currency ? t.amountCents : Number.isInteger(t.baseCents) ? t.baseCents : null);
 
+/** Datum `k` Monate später, gleicher Tag, höchstens der letzte des Monats. */
+export function addMonths(date, k) {
+  let y = Number(date.slice(0, 4));
+  let m = Number(date.slice(5, 7)) - 1 + k;
+  y += Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  const month = `${y}-${String(m + 1).padStart(2, '0')}`;
+  return `${month}-${String(Math.min(Number(date.slice(8, 10)), daysInMonth(month))).padStart(2, '0')}`;
+}
+
+/** Betrag in n Teile, Rest auf den ersten: 100 / 12 → 12, 8, 8, … */
+function shares(cents, n) {
+  const each = Math.trunc(cents / n);
+  return Array.from({ length: n }, (_, i) => (i === 0 ? cents - each * (n - 1) : each));
+}
+
+/** Teile einer aufgeteilten Buchung: Rest bei der eigenen Kategorie, jeder Teil in seiner. Euro-Betrag bei Fremdwährung anteilig. */
+function splitPieces(t) {
+  if (!t.splits?.length) return [t];
+  const base = (c) => (Number.isInteger(t.baseCents) && t.amountCents ? Math.round(t.baseCents * c / t.amountCents) : t.baseCents);
+  const parts = t.splits.map((p, i) => ({ ...t, id: `${t.id}#${i + 1}`, categoryId: p.categoryId, amountCents: p.cents, baseCents: base(p.cents), splits: [], part: true }));
+  const rest = t.amountCents - t.splits.reduce((a, p) => a + p.cents, 0);
+  const restBase = Number.isInteger(t.baseCents) ? t.baseCents - parts.reduce((a, p) => a + p.baseCents, 0) : t.baseCents;
+  return [{ ...t, amountCents: rest, baseCents: restBase, splits: [] }, ...parts];
+}
+
+/** Jahreskosten als zwölf Monatsteile ab dem Monat der Zahlung. */
+function spreadPieces(t) {
+  const amounts = shares(t.amountCents, 12);
+  const bases = Number.isInteger(t.baseCents) ? shares(t.baseCents, 12) : null;
+  return amounts.map((c, k) => ({
+    ...t, id: k ? `${t.id}~${k}` : t.id, date: addMonths(t.date, k), amountCents: c, baseCents: bases ? bases[k] : t.baseCents, part: t.part || k > 0,
+  }));
+}
+
+/**
+ * Buchungen, wie sie in den Summen zählen: aufgeteilte Buchungen als Teile je Kategorie, Jahreskosten (`spread`)
+ * als zwölf Monatsteile. Teile tragen `part: true` und zählen nicht als eigene Zahlung. Für Listen gilt weiter das Original.
+ * @param {import('./model.js').Transaction[]} transactions
+ */
+export function forSums(transactions) {
+  const out = [];
+  for (const t of transactions) {
+    if (!t.spread && !t.splits?.length) { out.push(t); continue; }
+    for (const p of splitPieces(t)) {
+      if (t.spread && counts(t)) out.push(...spreadPieces(p)); else out.push(p);
+    }
+  }
+  return out;
+}
+
 /** Gibt es mitgezählte Buchungen vor diesem Monat? Erst dann ist der Monat selbst vollständig erfasst. */
 export function trackedBefore(transactions, month) {
   return transactions.some((t) => counts(t) && monthOf(t.date) < month);
@@ -389,7 +440,7 @@ export function monthSummary(transactions, month, today, budgetCents = null, cur
   return {
     month,
     spentCents,
-    count: counted.length,
+    count: counted.filter((t) => !t.part).length,
     previousCents,
     previousComplete: trackedBefore(transactions, prev),
     comparedToDay,
@@ -495,7 +546,7 @@ export function groupByDay(transactions, filter = {}) {
   const list = sortTransactions(transactions).filter((t) =>
     (!filter.month || monthOf(t.date) === filter.month)
     && (!filter.kind || kindOf(t) === filter.kind)
-    && (!cats || !cats.length || cats.includes(t.categoryId))
+    && (!cats || !cats.length || cats.includes(t.categoryId) || (t.splits || []).some((p) => cats.includes(p.categoryId)))
     && (!filter.sources || !filter.sources.length || filter.sources.includes(t.source))
     && (!filter.hideExcluded || !t.excluded)
     && (!filter.merchant || t.merchant === filter.merchant)
@@ -721,10 +772,13 @@ export function openTransferAsks(asks, transactions) {
  * @param {import('./model.js').Transaction[]} transactions
  * @param {string} year   YYYY
  * @param {string} today  YYYY-MM-DD
+ * @param {string} currency
+ * @param {string|null} [categoryId]  nur diese Kategorie (null = ohne Kategorie); weggelassen = alle
  * @returns {{year: string, months: {month: string, cents: number, count: number}[], totalCents: number, incomeCents: number, savingCents: number,
  *   averageCents: number|null, maxCents: number, previousCents: number|null, comparedTo: string|null}}
  */
-export function yearSummary(transactions, year, today, currency = 'EUR') {
+export function yearSummary(transactions, year, today, currency = 'EUR', categoryId = undefined) {
+  if (categoryId !== undefined) transactions = transactions.filter((t) => (t.categoryId ?? null) === categoryId);
   const months = Array.from({ length: 12 }, (_, i) => ({ month: `${year}-${String(i + 1).padStart(2, '0')}`, cents: 0, count: 0 }));
   const prevYear = String(Number(year) - 1);
   const thisYear = today.slice(0, 4);
@@ -813,7 +867,7 @@ export function monthReview(transactions, month, currency = 'EUR') {
   return {
     month,
     spentCents: inMonth.reduce((s, t) => s + t.amountCents, 0),
-    count: inMonth.length,
+    count: inMonth.filter((t) => !t.part).length,
     previousCents: transactions.filter((t) => counts(t) && monthOf(t.date) === prev)
       .reduce((s, t) => s + (baseAmount(t, currency) ?? 0), 0),
     previousComplete: trackedBefore(transactions, prev),

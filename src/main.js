@@ -1,7 +1,7 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
 import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
@@ -536,11 +536,17 @@ function renderFilter() {
 // ---------- Bearbeiten ----------
 /** Art im Bearbeiten-Blatt wählen. Eine Kategorie gibt es überall außer bei Umbuchungen; „gleicht sich aus“ hat keinen eigenen Knopf. */
 function setEditKind(kind) {
+  // Teile gehören zur Art (Ausgabe- oder Einnahme-Kategorien): beim Wechsel neu anfangen.
+  if (kind !== view.editKind) { $('#split-rows').innerHTML = ''; $('[data-act="add-split"]').hidden = false; }
   view.editKind = kind;
   for (const b of document.querySelectorAll('#kind-seg button')) b.setAttribute('aria-pressed', String(b.dataset.kind === kind));
   const f = $('#edit-form');
   f.categoryId.closest('label').hidden = kind === 'transfer';
   if (kind === 'transfer') $('#rule-offer').hidden = true;
+  $('#spread-opt').hidden = kind !== 'expense';
+  $('#tax-opt').hidden = kind === 'transfer';
+  $('#split-box').hidden = !(kind === 'expense' || kind === 'income');
+  updateSplitRest();
   fillAccountSelects();
   updateOwnOffer();
   $('#edit-amount-cap').textContent = kind === 'income' ? 'betrag (eingegangen)' : kind === 'balance' ? 'betrag (− = eingegangen)' : 'betrag';
@@ -566,6 +572,46 @@ function fillAccountSelects() {
   $('#acct-cap').textContent = moving ? 'von' : 'konto';
 }
 
+// ---------- Aufteilen ----------
+/** Eine Zeile „Kategorie + Betrag“ für einen Teil der Buchung. */
+function addSplitRow(categoryId = null, cents = null) {
+  const rows = $('#split-rows');
+  if (rows.children.length >= MAX_SPLITS) return;
+  const kinds = view.editKind === 'income' ? ['income'] : ['expense'];
+  const row = document.createElement('div');
+  row.className = 'two splitrow';
+  row.innerHTML = `<label class="field"><span class="cap">teil in</span><select name="splitCat">${ui.categoryOptions(categoryId, { withNone: false, kinds })}</select></label>`
+    + `<label class="field"><span class="cap">betrag</span><input name="splitAmount" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${cents ? ui.amountInput(Math.abs(cents)) : ''}"></label>`
+    + '<button type="button" class="textbtn" data-act="remove-split" aria-label="Teil entfernen">entfernen</button>';
+  rows.append(row);
+  $('[data-act="add-split"]').hidden = rows.children.length >= MAX_SPLITS;
+}
+
+/** Teile aus dem Bearbeiten-Blatt; leere Zeilen fallen weg. null = ein Betrag ist keine Zahl. */
+function readSplits() {
+  const out = [];
+  for (const row of document.querySelectorAll('#split-rows .splitrow')) {
+    const text = row.querySelector('[name="splitAmount"]').value.trim();
+    if (!text) continue;
+    const a = parseAmount(text);
+    if (!a) return null;
+    out.push({ categoryId: row.querySelector('[name="splitCat"]').value, cents: Math.abs(a.cents) });
+  }
+  return out;
+}
+
+/** Was bei der eigenen Kategorie bleibt, unter den Teilen. */
+function updateSplitRest() {
+  const f = $('#edit-form');
+  const p = $('#split-rest');
+  const parts = readSplits();
+  const amount = parseAmount(f.amount.value);
+  if (!parts?.length || !amount) { p.hidden = true; return; }
+  const rest = Math.abs(amount.cents) - parts.reduce((a, x) => a + x.cents, 0);
+  p.hidden = false;
+  p.textContent = rest > 0 ? `Rest bei ${ui.catLabel(f.categoryId.value || null)}: ${ui.amountInput(rest)}` : 'Die Teile sind zusammen so groß wie die ganze Buchung oder größer.';
+}
+
 function openEditor(id) {
   const c = clock();
   const t = id ? state.transactions.find((x) => x.id === id) : { ...emptyTransaction(null, c.today), time: c.time };
@@ -585,6 +631,12 @@ function openEditor(id) {
   f.categoryId.innerHTML = `${ui.categoryOptions(t.categoryId)}<optgroup label="Zählt nicht"><option value="__transfer">Umbuchung (eigene Konten)</option></optgroup>`;
   f.note.value = t.note;
   f.excluded.checked = !!t.excluded;
+  f.spread.checked = !!t.spread;
+  f.tax.checked = !!t.tax;
+  $('#split-rows').innerHTML = '';
+  $('[data-act="add-split"]').hidden = false;
+  view.editKind = kindOf(t);
+  for (const p of t.splits || []) addSplitRow(p.categoryId, p.cents);
   delete f.accountId.dataset.filled;
   delete f.toAccountId.dataset.filled;
   setEditKind(kindOf(t));
@@ -657,6 +709,17 @@ async function saveEditor() {
     }
     baseCents = b.cents;
   }
+  const parts = kind === 'expense' || kind === 'income' ? readSplits() : [];
+  if (parts === null) {
+    $('#edit-error').textContent = 'Die Beträge der Teile bitte als Zahl angeben, z. B. 12,40.';
+    $('#edit-error').hidden = false;
+    return false;
+  }
+  if (parts.reduce((a, x) => a + x.cents, 0) >= Math.abs(cents)) {
+    $('#edit-error').textContent = 'Die Teile zusammen müssen kleiner sein als der ganze Betrag; der Rest bleibt bei der Kategorie oben.';
+    $('#edit-error').hidden = false;
+    return false;
+  }
   const snap = snapshot();
   const id = t.id || `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   let categoryId = cat;
@@ -666,6 +729,9 @@ async function saveEditor() {
     ...t, id, merchant: f.merchant.value, amountCents: cents, kind, currency, baseCents,
     card: f.card.value, date: f.date.value, time: f.time.value || null, categoryId, manualCategory, note: f.note.value,
     excluded: f.excluded.checked,
+    spread: kind === 'expense' && f.spread.checked,
+    tax: kind !== 'transfer' && f.tax.checked,
+    splits: parts,
     accountId: state.accounts.length ? f.accountId.value || null : t.accountId,
     toAccountId: state.accounts.length && (kind === 'transfer' || kind === 'saving') ? f.toAccountId.value || null : null,
   });
@@ -1416,6 +1482,8 @@ function bind() {
       if (b.dataset.tab === 'overview') { view.listCats = []; view.listMerchant = null; }
       selectTab(b.dataset.tab);
     }
+    if (act === 'add-split') { addSplitRow(); $('#split-rows .splitrow:last-child select').focus(); return; }
+    if (act === 'remove-split') { b.closest('.splitrow').remove(); $('[data-act="add-split"]').hidden = false; updateSplitRest(); return; }
     if (act === 'filter-cat' || act === 'filter-merchant' || act === 'show-merchant') {
       const merchant = act !== 'filter-cat';
       // Händler: alle Zahlungen dort, nicht nur dieser Monat.
@@ -1535,6 +1603,12 @@ function bind() {
   });
 
   document.addEventListener('change', async (e) => {
+    if (e.target.id === 'year-cat') {
+      const v = e.target.value;
+      view.yearCat = v === '' ? undefined : v === '__none' ? null : v;
+      render();
+      return;
+    }
     if (e.target.id === 'statement-file') {
       const file = e.target.files[0];
       e.target.value = '';
@@ -1579,6 +1653,7 @@ function bind() {
 
   let qTimer;
   document.addEventListener('input', (e) => {
+    if (e.target.closest?.('#edit-form') && (e.target.name === 'amount' || e.target.name === 'splitAmount')) { updateSplitRest(); return; }
     if (e.target.id !== 'f-query') return;
     clearTimeout(qTimer);
     qTimer = setTimeout(() => {

@@ -1,7 +1,7 @@
 // Oberfläche: Formatierung und Rendering. Liest nur Daten aus der Logik, verändert keinen Zustand.
 import {
   monthSummary, groupByDay, monthsWithData, previousMonth, daysBetween,
-  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks,
+  yearSummary, merchantSummary, monthReview, detectRecurring, ruleDefault, monthCurve, needsCategory, kindOf, budgetFor, categoryKind, openTransferAsks, forSums, counts,
 } from './logic.js';
 import { wealth, monthFlows, balanceOf, monthlyInterest, fixedCosts, freeForMonth, accountFor, counterFor, depotValue, depotPlans } from './accounts.js';
 import { DEFAULT_RULES, BANK_TEMPLATES } from './catalog.js';
@@ -166,7 +166,7 @@ export function renderOverview(el, state, view, clock, info) {
   const cur = state.settings.currency;
   const months = monthsWithData(state.transactions, clock.month);
   const budget = budgetFor(state.transactions, state.settings, view.month, cur);
-  const s = monthSummary(state.transactions, view.month, clock.today, budget ? budget.cents : null, cur);
+  const s = monthSummary(forSums(state.transactions), view.month, clock.today, budget ? budget.cents : null, cur);
   const idx = months.indexOf(view.month);
   const uncategorized = s.byCategory.find((c) => c.categoryId === null);
   const open = state.transactions.filter(needsCategory).length;
@@ -286,7 +286,7 @@ export function renderOverview(el, state, view, clock, info) {
  */
 function curveBlock(state, view, clock, s) {
   const cur = state.settings.currency;
-  const c = monthCurve(state.transactions, view.month, clock.today, cur);
+  const c = monthCurve(forSums(state.transactions), view.month, clock.today, cur);
   if (!c.current.some((v) => v !== 0)) return '';
   const budget = budgetFor(state.transactions, state.settings, view.month, cur)?.cents || null;
   const prev = c.previous;
@@ -324,12 +324,26 @@ function curveBlock(state, view, clock, s) {
 
 const MONTH_INITIALS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
-/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. */
+/** Jahresblick: zwölf Balken, antippbar, darunter Summe, Durchschnitt und Vorjahr. Wahlweise nur eine Kategorie. */
 function yearBlock(state, view, clock, months) {
   const cur = state.settings.currency;
   const year = view.month.slice(0, 4);
-  const y = yearSummary(state.transactions, year, clock.today, cur);
-  if (!y.months.some((m) => m.count)) return '';
+  const sums = forSums(state.transactions);
+  const all = yearSummary(sums, year, clock.today, cur);
+  if (!all.months.some((m) => m.count)) return '';
+  // Kategorien mit Ausgaben in diesem Jahr, größte zuerst (für die Auswahl).
+  const used = new Map();
+  for (const t of sums) {
+    if (!counts(t) || !t.date.startsWith(year)) continue;
+    const v = t.currency === cur ? t.amountCents : t.baseCents;
+    if (Number.isInteger(v)) used.set(t.categoryId ?? null, (used.get(t.categoryId ?? null) || 0) + v);
+  }
+  const cats = [...used].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  const pick = view.yearCat !== undefined && cats.includes(view.yearCat) ? view.yearCat : undefined;
+  const y = pick === undefined ? all : yearSummary(sums, year, clock.today, cur, pick);
+  const select = cats.length > 1 ? `<label class="yearcat"><span class="visually-hidden">Kategorie</span><select id="year-cat">
+    <option value="">alle kategorien</option>${cats.map((id) => `<option value="${id === null ? '__none' : esc(id)}"${id === pick ? ' selected' : ''}>${esc(catLabel(id))}</option>`).join('')}
+  </select></label>` : '';
   const bars = y.months.map((m, i) => {
     const h = y.maxCents > 0 ? Math.max(0, m.cents) / y.maxCents : 0;
     const can = months.includes(m.month);
@@ -340,12 +354,12 @@ function yearBlock(state, view, clock, months) {
   const notes = [];
   if (y.averageCents !== null) notes.push(`ø ${money(y.averageCents, cur)} pro monat`);
   const ch = y.previousCents !== null ? change(y.totalCents, y.previousCents) : null;
-  if (y.incomeCents > 0) notes.push(`übrig ${signed(y.incomeCents - y.totalCents - y.savingCents, cur)}`);
+  if (y.incomeCents > 0 && pick === undefined) notes.push(`übrig ${signed(y.incomeCents - y.totalCents - y.savingCents, cur)}`);
   if (ch) notes.push(`${ch} zu ${Number(year) - 1}${y.comparedTo ? ` bis ${Number(y.comparedTo.slice(3))}. ${MONTHS[Number(y.comparedTo.slice(0, 2)) - 1].toLowerCase()}` : ''}`);
   return `${head(`jahr ${year}`)}
-  <div class="year">
+  <div class="year">${select}
     <div class="yearhead"><span class="v" ${counting('year', y.totalCents, 'money')}>${money(y.totalCents, cur)}</span>${notes.length ? `<span class="sub">${esc(notes.join(' · '))}</span>` : ''}</div>
-    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}">${bars}</div>
+    <div class="ybars" role="group" aria-label="Ausgaben pro Monat ${year}${pick !== undefined ? `, ${esc(catLabel(pick))}` : ''}">${bars}</div>
   </div>`;
 }
 
@@ -366,7 +380,7 @@ function reviewCard(state, clock, info) {
   const prev = previousMonth(clock.month);
   if (Number(clock.today.slice(8, 10)) > 10 || info.reviewDismissed === prev) return '';
   const cur = state.settings.currency;
-  const r = monthReview(state.transactions, prev, cur);
+  const r = monthReview(forSums(state.transactions), prev, cur);
   if (!r) return '';
   // Budget nur, wenn es im Vormonat schon galt.
   const bf = budgetFor(state.transactions, state.settings, prev, cur);
@@ -466,7 +480,10 @@ export function renderList(el, state, view, clock) {
       const sub = [
         t.excluded ? 'zählt nicht mit' : kind === 'transfer' ? 'Umbuchung · zählt nicht mit' : '',
         g.date ? '' : dayLabel(t.date, clock.today, clock.yesterday),
-        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind], base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
+        kind === 'transfer' ? '' : t.categoryId || kind === 'expense' ? catLabel(t.categoryId) : KIND_LABELS[kind],
+        t.splits?.length ? `+ ${t.splits.map((p) => catLabel(p.categoryId)).join(', ')}` : '',
+        t.spread ? 'auf 12 Monate verteilt' : '', t.tax ? 'Steuer' : '',
+        base, t.time, t.card, t.note, t.source === 'demo' ? 'Beispiel' : '',
       ].filter(Boolean).map(esc).join(' · ');
       const fresh = view.fresh?.has(t.id);
       html += item({
