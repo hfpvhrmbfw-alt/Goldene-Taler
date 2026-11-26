@@ -296,7 +296,19 @@ export function buildExport(state, exportedAt) {
     rules: state.rules,
     deletedIds: state.deletedIds,
     transferAsk: state.transferAsk || [],
+    contracts: state.contracts || {},
   };
+}
+
+/** Verträge je Händler (genauer Name): bis wann kündbar. Ungültige Einträge fallen weg. */
+export function sanitizeContracts(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw).slice(0, 200)) {
+    const merchant = str(k, 200);
+    if (merchant && v && DATE_RE.test(v.cancelBy)) out[merchant] = { cancelBy: v.cancelBy };
+  }
+  return out;
 }
 
 /** Offene Fragen „Umbuchung?“ als Paare von Buchungs-IDs (Ausgabe, Einnahme). */
@@ -327,7 +339,7 @@ export function parseImport(text) {
   const accounts = Array.isArray(data.accounts) ? sanitizeAccounts(data.accounts) : null;
   const positions = sanitizePositions(data.positions);
   return {
-    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk),
+    ok: true, transactions, rules, deletedIds, categories, accounts, positions, transferAsk: sanitizeTransferAsk(data.transferAsk), contracts: sanitizeContracts(data.contracts),
     settings: sanitizeSettings(data.settings),
     skipped: data.transactions.length - transactions.length,
   };

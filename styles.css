@@ -542,3 +542,4 @@ button.kpi.tap:active { background:var(--sunken); }
 .item .n small.in { color:var(--ok); }
 .kpi .sub .gain { color:var(--ok); }
 .kpi .sub .loss { color:var(--err); }
+.field.contract { margin:0 0 var(--s4); max-width:220px; }

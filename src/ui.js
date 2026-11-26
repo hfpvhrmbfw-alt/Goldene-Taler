@@ -233,6 +233,9 @@ export function renderOverview(el, state, view, clock, info) {
   if (demoCount) {
     todo += item({ tag: 'button', attrs: 'data-act="demo-remove"', title: 'Beispieldaten entfernen', sub: `${demoCount} Beispielbuchungen, deine eigenen bleiben`, chev: true });
   }
+  for (const c of contractsDue(state.contracts, clock.today)) {
+    todo += item({ tag: 'button', cls: 'open', attrs: `data-act="filter-merchant" data-merchant="${esc(c.merchant)}"`, title: `${esc(c.merchant)} kündigen?`, sub: c.days === 0 ? 'Frist endet heute' : `kündbar bis ${esc(shortDateLabel(c.cancelBy))}, noch ${plural(c.days, 'Tag', 'Tage')}`, chev: true });
+  }
   if (todo) html += `<ul class="list todo">${todo}</ul>`;
   html += view.importReport || '';
   html += curveBlock(state, view, clock, s);
@@ -375,7 +378,10 @@ function recurringBlock(state, clock) {
   if (!list.length) return '';
   const monthly = list.reduce((a, r) => a + r.monthlyCents, 0);
   return `${head('jeden monat')}<ul class="list">
-    ${list.map((r) => item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr`, n: money(r.monthlyCents, cur), chev: true })).join('')}
+    ${list.map((r) => {
+    const c = state.contracts?.[r.merchant];
+    return item({ tag: 'button', attrs: `data-act="filter-merchant" data-merchant="${esc(r.merchant)}"`, title: esc(r.merchant), sub: `seit ${esc(monthLabel(r.since).toLowerCase())} · ${money(r.yearlyCents, cur)} im jahr${c ? ` · kündbar bis ${esc(shortDateLabel(c.cancelBy))}` : ''}`, n: money(r.monthlyCents, cur), chev: true });
+  }).join('')}
   </ul>
   <p class="barnote">Zusammen ${money(monthly, cur)} im Monat, ${money(monthly * 12, cur)} im Jahr. Erkannt an gleichen Beträgen in mindestens drei Monaten hintereinander.</p>`;
 }
@@ -452,7 +458,7 @@ export function renderList(el, state, view, clock) {
     </div>` : ''}
   </div>
   <p class="meta-line">${view.listMerchant && m ? `${esc(monthLabel(m))} · ` : ''}${plural(count, 'Buchung', 'Buchungen')} · ${dayTotal(total, cur) || money(0, cur)}</p>
-  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) : ''}
+  ${view.listMerchant ? merchantKpis(state, view.listMerchant, clock) + contractField(state, view.listMerchant) : ''}
   <label class="search">${ICON.search}<input type="search" id="f-query" value="${esc(view.query)}" placeholder="suchen" aria-label="Händler oder Notiz suchen"></label>
   <div class="seg" role="group" aria-label="Zeitraum">
     <button data-act="list-scope" data-scope="month" aria-pressed="${!!m}">${esc(monthName(m || view.lastListMonth || clock.month).toLowerCase())}</button>
@@ -525,6 +531,23 @@ function merchantKpis(state, merchant, clock) {
     <div class="kpi"><div class="cap">${clock.today.slice(0, 4)}</div><div class="v">${money(s.yearCents, cur)}</div><div class="sub">${plural(s.yearCount, 'Zahlung', 'Zahlungen')}</div></div>
     <div class="kpi"><div class="cap">insgesamt</div><div class="v">${money(s.totalCents, cur)}</div><div class="sub">ø ${money(s.averageCents, cur)} · seit ${esc(monthLabel(s.firstDate).toLowerCase())}</div></div>
   </div>`;
+}
+
+/** Händler-Ansicht: bis wann der Vertrag kündbar ist (Abo, Versicherung). Erinnerung erscheint 30 Tage vorher in der Übersicht. */
+function contractField(state, merchant) {
+  const c = state.contracts?.[merchant];
+  return `<label class="field contract"><span class="cap">kündbar bis</span><input type="date" id="cancel-by" data-merchant="${esc(merchant)}" value="${c ? esc(c.cancelBy) : ''}"></label>`;
+}
+
+/** „12. Dezember“ */
+export const shortDateLabel = (d) => `${Number(d.slice(8, 10))}. ${MONTHS[Number(d.slice(5, 7)) - 1]}`;
+
+/** Verträge, deren Kündigungsfrist in den nächsten 30 Tagen endet (heute eingeschlossen), nächste zuerst. */
+export function contractsDue(contracts, today) {
+  return Object.entries(contracts || {})
+    .map(([merchant, c]) => ({ merchant, cancelBy: c.cancelBy, days: daysBetween(today, c.cancelBy) }))
+    .filter((c) => c.days >= 0 && c.days <= 30)
+    .sort((a, b) => a.days - b.days);
 }
 
 /** Kasten „automatisch“: was Taler rechnet und woraus. */

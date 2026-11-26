@@ -603,3 +603,18 @@ test('yearSummary: nur eine Kategorie', () => {
   assert.equal(L.yearSummary(list, '2026', '2026-11-20', 'EUR', null).totalCents, 300);
   assert.equal(L.yearSummary(list, '2026', '2026-11-20', 'EUR').totalCents, 1800);
 });
+
+test('Verträge: gültige Daten bleiben, Erinnerung 30 Tage vorher', async () => {
+  const { contractsDue, buildCsv, taxYears } = await import('../src/ui.js');
+  assert.deepEqual(M.sanitizeContracts({ Netflix: { cancelBy: '2026-12-12' }, Kaputt: { cancelBy: '12.12.' }, '': { cancelBy: '2026-12-12' } }), { Netflix: { cancelBy: '2026-12-12' } });
+  const due = contractsDue({ A: { cancelBy: '2026-12-20' }, B: { cancelBy: '2027-02-01' }, C: { cancelBy: '2026-11-01' }, D: { cancelBy: '2026-11-26' } }, '2026-11-26');
+  assert.deepEqual(due.map((c) => [c.merchant, c.days]), [['D', 0], ['A', 24]]);
+  // Tabelle: Beispieldaten fehlen, Ausgaben minus, Steuerliste nur markierte
+  const list = [tr('a', '2026-03-01', 1250, { tax: true }), tr('b', '2026-03-02', -300000, { kind: 'income' }), tr('c', '2026-03-03', 500, { source: 'demo' })];
+  const csv = buildCsv(list).split('\r\n');
+  assert.equal(csv.length, 3);
+  assert.match(csv[1], /"-12,50"/);
+  assert.match(csv[2], /"3000,00"/);
+  assert.equal(buildCsv(list, { onlyTax: true }).split('\r\n').length, 2);
+  assert.deepEqual(taxYears(list, 'EUR'), [{ year: '2026', count: 1, cents: 1250 }]);
+});

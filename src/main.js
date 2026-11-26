@@ -1,7 +1,7 @@
 // Start, Aktionen, Ereignisse. Einzige Stelle, die die Uhr liest.
 import { open } from './storage.js';
 import {
-  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
+  sanitizeTransaction, sanitizeRule, sanitizeSettings, sanitizeCategories, sanitizeAccounts, sanitizeAccount, sanitizePositions, sanitizePosition, sanitizeTransferAsk, sanitizeContracts, MAX_SPLITS, DEFAULT_SETTINGS, emptyTransaction, buildExport, parseImport,
 } from './model.js';
 import { accountFor, counterFor, ownNames, statementAccount, withStatementBalance, migrateOwnAccounts, quantityIn, positionValue } from './accounts.js';
 import {
@@ -29,7 +29,7 @@ function clock() {
 }
 
 let db;
-const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [] };
+const state = { transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: DEFAULT_CATEGORIES, accounts: [], positions: [], transferAsk: [], contracts: {} };
 const view = {
   tab: 'overview', month: clock().month,
   listMonth: clock().month, lastListMonth: clock().month, listCats: [], listKind: undefined, listSources: [], hideExcluded: false, sort: 'new', listMerchant: null, query: '', from: null,
@@ -51,6 +51,7 @@ async function saveCategories() { await db.setMeta('categories', state.categorie
 async function saveAccounts() { await db.setMeta('accounts', state.accounts); }
 async function savePositions() { await db.setMeta('positions', state.positions); }
 async function saveAsks() { await db.setMeta('transferAsk', state.transferAsk); }
+async function saveContracts() { await db.setMeta('contracts', state.contracts); }
 const newAccountId = (i = 0) => `a-${Date.now().toString(36)}${i ? `-${i}` : ''}`;
 /** Alle Namen, an denen Taler eigene Konten erkennt (Konten und weitere Namen aus den Einstellungen). */
 const own = () => ownNames(state.settings, state.accounts);
@@ -71,7 +72,7 @@ async function reapplyRules() {
 
 // ---------- Rückgängig ----------
 // Der Zustand wird nie verändert, nur ersetzt. Ein Schnappschuss sind daher nur die alten Verweise.
-const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions, transferAsk: state.transferAsk });
+const snapshot = () => ({ transactions: state.transactions, rules: state.rules, deletedIds: state.deletedIds, settings: state.settings, categories: state.categories, accounts: state.accounts, positions: state.positions, transferAsk: state.transferAsk, contracts: state.contracts });
 
 async function restore(snap) {
   const keepT = new Set(snap.transactions.map((t) => t.id));
@@ -90,6 +91,7 @@ async function restore(snap) {
   await saveAccounts();
   await savePositions();
   await saveAsks();
+  await saveContracts();
 }
 
 /** Meldung mit „rückgängig“, das den Stand vor der Aktion wiederherstellt. */
@@ -457,6 +459,7 @@ async function replaceAll(r, label, keep = {}) {
   state.accounts = r.accounts || [];
   state.positions = r.positions;
   state.transferAsk = openTransferAsks(r.transferAsk, state.transactions);
+  state.contracts = r.contracts || {};
   view.budgetShow = null;
   if ('priceKey' in keep) { info.priceKey = keep.priceKey; info.priceFetch = null; }
   await saveTransactions(state.transactions);
@@ -465,6 +468,7 @@ async function replaceAll(r, label, keep = {}) {
   await saveAccounts();
   await savePositions();
   await saveAsks();
+  await saveContracts();
   await db.setMeta('settings', state.settings);
   await db.setMeta('deletedIds', state.deletedIds);
   await db.setMeta('initialized', true);
@@ -1568,7 +1572,7 @@ function bind() {
     if (act === 'restore-previous') await restorePrevious();
     if (act === 'reset' && await ask('Wirklich alle Buchungen, Regeln und Einstellungen löschen? Die Datei aus dem Kurzbefehl bleibt erhalten, der jetzige Stand lässt sich danach in den Einstellungen zurückholen.', 'Alles löschen', { danger: true })) {
       Object.assign(info, { lastImport: null, lastBackup: null, reviewDismissed: null, changes: 0 });
-      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [] },
+      await replaceAll({ transactions: [], rules: [], settings: { ...DEFAULT_SETTINGS }, deletedIds: [], categories: null, accounts: [], positions: [], transferAsk: [], contracts: {} },
         'alles gelöscht', { priceKey: null });
       view.importReport = '';
       render();
@@ -1613,6 +1617,16 @@ function bind() {
   });
 
   document.addEventListener('change', async (e) => {
+    if (e.target.id === 'cancel-by') {
+      const merchant = e.target.dataset.merchant;
+      const snap = snapshot();
+      const { [merchant]: _old, ...rest } = state.contracts;
+      state.contracts = e.target.value ? { ...rest, [merchant]: { cancelBy: e.target.value } } : rest;
+      await saveContracts();
+      render();
+      undoable(e.target.value ? `Kündbar bis ${ui.shortDateLabel(e.target.value)} gemerkt` : 'Kündigungsdatum entfernt', snap);
+      return;
+    }
     if (e.target.id === 'year-cat') {
       const v = e.target.value;
       view.yearCat = v === '' ? undefined : v === '__none' ? null : v;
@@ -1841,6 +1855,7 @@ async function start() {
   state.accounts = sanitizeAccounts(storedAccounts);
   state.positions = sanitizePositions(await db.getMeta('positions'));
   state.transferAsk = openTransferAsks(sanitizeTransferAsk(await db.getMeta('transferAsk')), state.transactions);
+  state.contracts = sanitizeContracts(await db.getMeta('contracts'));
   // Einmalig: Aus der Liste „eigene Konten“ werden Konten (ING, Trade Republic), sobald es echte Buchungen gibt.
   if (storedAccounts === null && state.transactions.some((t) => t.source === 'statement' || t.source === 'shortcut')) {
     const m = migrateOwnAccounts(state.settings.ownAccounts, newAccountId);
