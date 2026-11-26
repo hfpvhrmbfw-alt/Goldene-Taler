@@ -931,6 +931,7 @@ function setCatKind(kind, locked) {
     b.disabled = locked && b.dataset.ckind !== kind;
   }
   $('#cat-kind-hint').textContent = KIND_HINTS[kind] + (locked ? ' Die Art lässt sich nur bei neuen Kategorien wählen.' : '');
+  $('#cat-budget-field').hidden = kind !== 'expense';
 }
 
 /** Kategorie bearbeiten oder neu anlegen. `forSort`: aus dem Einordnen heraus, die Zahlung kommt danach gleich hinein. */
@@ -940,11 +941,12 @@ function openCatEditor(id, { kind = 'expense', forSort = false } = {}) {
   const f = $('#cat-form');
   f.name.value = c ? c.name : '';
   f.hidden.checked = !!c?.hidden;
+  f.budget.value = c?.budgetCents ? ui.amountInput(c.budgetCents) : '';
   setCatKind(c ? c.kind : kind, !!c);
   const others = c ? state.categories.filter((x) => x.id !== c.id && x.kind === c.kind) : [];
   $('#cat-merge').hidden = !others.length;
   f.mergeTo.innerHTML = others.map((x) => `<option value="${ui.esc(x.id)}">${ui.esc(x.name)}</option>`).join('');
-  const used = c && state.transactions.some((t) => t.categoryId === c.id);
+  const used = c && state.transactions.some((t) => t.categoryId === c.id || (t.splits || []).some((p) => p.categoryId === c.id));
   $('#cat-delete').hidden = !(c && c.id.startsWith('c-') && !used);
   $('#cat-title').textContent = c ? 'kategorie ändern' : 'neue kategorie';
   $('#cat-error').hidden = true;
@@ -961,8 +963,11 @@ async function saveCatEditor() {
   const name = f.name.value.trim();
   if (!name) return catError('Bitte einen Namen angeben.');
   if (state.categories.some((x) => x !== c && x.name.toLowerCase() === name.toLowerCase())) return catError('Diesen Namen gibt es schon.');
+  const kind = c ? c.kind : view.catKind;
+  const budget = kind === 'expense' && f.budget.value.trim() ? parseAmount(f.budget.value) : null;
+  if (kind === 'expense' && f.budget.value.trim() && (!budget || budget.cents <= 0)) return catError('Das Budget bitte als Betrag angeben, z. B. 400.');
   const snap = snapshot();
-  const next = { id: c ? c.id : `c-${Date.now().toString(36)}`, name, kind: c ? c.kind : view.catKind, hidden: forSort ? false : f.hidden.checked };
+  const next = { id: c ? c.id : `c-${Date.now().toString(36)}`, name, kind, hidden: forSort ? false : f.hidden.checked, budgetCents: budget ? budget.cents : null };
   setCategories(c ? state.categories.map((x) => (x.id === c.id ? next : x)) : [...state.categories, next]);
   await saveCategories();
   if (forSort) { closeSheet($('#cat-dialog'), 'save'); await sortInto(next.id); return true; }
@@ -994,7 +999,7 @@ async function mergeCatEditor() {
 
 async function deleteCatEditor() {
   const { c } = view.catEditing;
-  if (!c || !c.id.startsWith('c-') || state.transactions.some((t) => t.categoryId === c.id)) return;
+  if (!c || !c.id.startsWith('c-') || state.transactions.some((t) => t.categoryId === c.id || (t.splits || []).some((p) => p.categoryId === c.id))) return;
   const snap = snapshot();
   const gone = state.rules.filter((r) => r.categoryId === c.id);
   for (const r of gone) await db.deleteRule(r.id);

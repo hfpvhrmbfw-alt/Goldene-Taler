@@ -469,7 +469,9 @@ test('mergeCategory: Buchungen und Regeln wandern mit', () => {
 
 test('Kategorien und Einstellungen: bereinigt, Sicherung mit und ohne Kategorienliste', () => {
   assert.deepEqual(M.sanitizeCategories([{ id: 'a', name: ' Haustier ', kind: 'income', hidden: true }, { id: 'a', name: 'doppelt' }, { id: '', name: 'x' }, null]),
-    [{ id: 'a', name: 'Haustier', kind: 'income', hidden: true }]);
+    [{ id: 'a', name: 'Haustier', kind: 'income', hidden: true, budgetCents: null }]);
+  assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'expense', budgetCents: 40000 }).budgetCents, 40000);
+  assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'income', budgetCents: 40000 }).budgetCents, null);
   assert.equal(M.sanitizeCategory({ id: 'a', name: 'x', kind: 'quatsch' }).kind, 'expense');
   assert.equal(M.sanitizeTransaction({ id: 'x', date: '2026-10-01', amountCents: 5, categoryId: 'c-1' }).categoryId, 'c-1');
   assert.equal(M.sanitizeRule({ id: 'r', pattern: 'A', categoryId: 'c-1' }).categoryId, 'c-1');

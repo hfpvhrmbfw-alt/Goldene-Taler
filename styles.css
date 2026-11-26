@@ -272,6 +272,10 @@ body::before { content:""; position:fixed; inset:0 0 auto; height:env(safe-area-
 .item .t .share { display:block; height:2px; margin-top:6px; background:var(--line); border-radius:1px; overflow:hidden; }
 .item .t .share > i { display:block; height:100%; background:var(--faint); }
 .item[aria-current] .t .share > i { background:var(--accent); }
+.item .t .share.budget { height:4px; border-radius:2px; }
+.item .t .share.budget > i { background:var(--ok); }
+.item .t .share.over > i { background:var(--err); }
+.item.overbudget .n { color:var(--err); }
 .item .n.in { color:var(--ok); }
 .item.open .t > span, .item.action .t > span { color:var(--accent-text); }
 .item.danger .t > b { color:var(--err); }

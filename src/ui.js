@@ -244,10 +244,15 @@ export function renderOverview(el, state, view, clock, info) {
   html += `${foldOpen('cats', 'kategorien', top, view)}<ul class="list">`;
   if (s.count === 0) html += `<li class="empty">In diesem Monat noch keine Zahlungen.</li>`;
   cats.forEach((c, i) => {
+    // Mit eigenem Budget: Balken und Anteil zeigen, wie viel davon verbraucht ist.
+    const budgetCents = CATS.find((x) => x.id === c.categoryId)?.budgetCents || null;
+    const used = budgetCents ? c.cents / budgetCents : null;
     html += item({
-      tag: 'button', attrs: `data-act="filter-cat" data-cat="${c.categoryId}"${i === 0 && c.cents > 0 ? ' aria-current="true"' : ''}`,
-      title: esc(catLabel(c.categoryId)), sub: `${c.count}× · ${pct(c.share)}`, n: sumHtml(c.cents, cur),
-      extra: `<span class="share" aria-hidden="true"><i style="width:${(c.share * 100).toFixed(1)}%"></i></span>`,
+      tag: 'button', cls: used > 1 ? 'overbudget' : '', attrs: `data-act="filter-cat" data-cat="${c.categoryId}"${i === 0 && c.cents > 0 ? ' aria-current="true"' : ''}`,
+      title: esc(catLabel(c.categoryId)),
+      sub: used !== null ? `${c.count}× · ${pct(used)} von ${money(budgetCents, cur)}${used > 1 ? ' · drüber' : ''}` : `${c.count}× · ${pct(c.share)}`,
+      n: sumHtml(c.cents, cur),
+      extra: `<span class="share${used !== null ? ' budget' : ''}${used > 1 ? ' over' : ''}" aria-hidden="true"><i style="width:${(Math.min(1, used ?? c.share) * 100).toFixed(1)}%"></i></span>`,
     });
   });
   if (uncategorized) {

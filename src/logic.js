@@ -602,7 +602,10 @@ export function categoriesByUse(transactions, categories, kinds) {
 /** Kategorie `from` in `to` aufgehen lassen: Buchungen und Regeln wandern mit. `to` muss dieselbe Art haben (prüft der Aufrufer). */
 export function mergeCategory(transactions, rules, from, to) {
   return {
-    transactions: transactions.map((t) => (t.categoryId === from ? { ...t, categoryId: to } : t)),
+    transactions: transactions.map((t) => {
+      const splits = (t.splits || []).some((p) => p.categoryId === from) ? t.splits.map((p) => (p.categoryId === from ? { ...p, categoryId: to } : p)) : t.splits;
+      return t.categoryId === from || splits !== t.splits ? { ...t, categoryId: t.categoryId === from ? to : t.categoryId, splits } : t;
+    }),
     rules: rules.map((r) => (r.categoryId === from ? { ...r, categoryId: to } : r)),
   };
 }

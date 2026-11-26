@@ -69,6 +69,7 @@ export const POSITION_COINS = ['BTC', 'ETH'];
  * @property {string} name
  * @property {'expense'|'income'|'balance'|'saving'} kind
  * @property {boolean} hidden  erscheint nicht mehr als Knopf beim Einordnen
+ * @property {number|null} budgetCents  eigenes Monatsbudget (nur Ausgaben), null = keins
  */
 
 /**
@@ -194,7 +195,10 @@ export function sanitizeCategory(raw) {
   const id = str(raw.id, 80);
   const name = str(raw.name, 40);
   if (!id || !name) return null;
-  return { id, name, kind: CATEGORY_KINDS.includes(raw.kind) ? raw.kind : 'expense', hidden: raw.hidden === true };
+  const kind = CATEGORY_KINDS.includes(raw.kind) ? raw.kind : 'expense';
+  const b = raw.budgetCents;
+  const budgetCents = kind === 'expense' && Number.isFinite(b) && b > 0 ? Math.round(b) : null;
+  return { id, name, kind, hidden: raw.hidden === true, budgetCents };
 }
 
 /** Liste aus dem Speicher oder einer Sicherung; doppelte IDs fallen weg. */
